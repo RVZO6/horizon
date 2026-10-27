@@ -9,7 +9,7 @@ use crate::sound_engine::{
     Sounds, TickContext,
 };
 use crate::sound_events::{Sound, SoundRegistry};
-#[cfg(feature = "audio")]
+#[cfg(all(feature = "audio", not(target_arch = "wasm32")))]
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use horizon_core::random::{LegacyRandom, RandomSource};
 use std::{
@@ -138,8 +138,11 @@ fn attach(mixer: &Mutex<Mixer>, channel: ChannelId, samples: Samples, looping: b
 }
 /// The open output stream. A build without the `audio` feature (the server build, which must not
 /// need libasound) never has one.
-#[cfg(feature = "audio")]
+#[cfg(all(feature = "audio", not(target_arch = "wasm32")))]
 type Stream = cpal::Stream;
+/// The browser's output mixes on a thread of its own (horizon-web), as a native callback does.
+#[cfg(all(feature = "audio", target_arch = "wasm32"))]
+type Stream = horizon_web::AudioOutput;
 #[cfg(not(feature = "audio"))]
 type Stream = std::convert::Infallible;
 pub struct Audio {
@@ -495,7 +498,7 @@ fn output_disabled(var: impl Fn(&str) -> Option<std::ffi::OsString>) -> Option<S
 }
 /// An output stream on `device` in its default configuration, whatever its
 /// sample format: the mixer works in f32 and converts.
-#[cfg(feature = "audio")]
+#[cfg(all(feature = "audio", not(target_arch = "wasm32")))]
 fn open_device(
     device: &cpal::Device,
     mixer: Arc<Mutex<Mixer>>,
@@ -516,7 +519,7 @@ fn open_device(
     stream.play()?;
     Ok((stream, config))
 }
-#[cfg(feature = "audio")]
+#[cfg(all(feature = "audio", not(target_arch = "wasm32")))]
 fn build_stream<T: cpal::SizedSample + cpal::FromSample<f32>>(
     device: &cpal::Device,
     config: &cpal::SupportedStreamConfig,
@@ -605,7 +608,26 @@ impl Audio {
     fn open(_: Arc<Mutex<Mixer>>) -> Result<Stream> {
         Err("this build has no sound output (built without the `audio` feature)".into())
     }
-    #[cfg(feature = "audio")]
+    #[cfg(all(feature = "audio", target_arch = "wasm32"))]
+    fn open(mixer: Arc<Mutex<Mixer>>) -> Result<Stream> {
+        if let Some(reason) = output_disabled(|name| std::env::var_os(name)) {
+            return Err(reason.into());
+        }
+        let output = horizon_web::AudioOutput::open(move |data, channels, rate| {
+            if let Ok(mut m) = mixer.lock() {
+                mix(&mut m, data, channels, rate);
+            } else {
+                data.fill(0.0);
+            }
+        })?;
+        log::info!(
+            "Horizon: audio output AudioWorklet ({} Hz, {} channels, f32)",
+            output.rate(),
+            horizon_web::AudioOutput::CHANNELS
+        );
+        Ok(output)
+    }
+    #[cfg(all(feature = "audio", not(target_arch = "wasm32")))]
     fn open(mixer: Arc<Mutex<Mixer>>) -> Result<Stream> {
         if let Some(reason) = output_disabled(|name| std::env::var_os(name)) {
             return Err(reason.into());

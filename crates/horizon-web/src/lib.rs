@@ -10,6 +10,9 @@
 #![cfg(target_arch = "wasm32")]
 
 mod alloc;
+mod audio;
+
+pub use audio::AudioOutput;
 
 #[global_allocator]
 static ALLOCATOR: alloc::Allocator = alloc::Allocator;
