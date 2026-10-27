@@ -13,6 +13,13 @@ rust-src --target wasm32-unknown-unknown`), `wasm-bindgen-cli` of the version in
 A browser needs WebGPU and shared memory: a secure context (HTTPS or localhost) and the
 cross-origin isolation headers web/serve.py sends.
 
+The page checks these requirements before downloading the game and reports bootstrap errors on
+screen. Vanadium disables WebGPU by design, so it cannot run this WebGPU-only build with its
+standard configuration; see [GrapheneOS's Vanadium documentation](https://grapheneos.org/features#vanadium).
+
+Startup checks: `node --test web/startup.test.mjs` (`python3 -m unittest discover -s tests` runs
+it when Node is installed).
+
 ## How it works
 
 - **`web/std/std.patch`** gives Rust's standard library a browser backend, so the game's threads,

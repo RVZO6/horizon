@@ -4,18 +4,12 @@
 import { LoadingOverlay } from './overlay.js';
 import { start } from './threads.js';
 import { loadBundle } from './files.js';
+import { showFailure } from './startup.js';
 
 // The game stopped (a thread trapped, as a panic aborts, or a worker could not start): say so
 // over the frozen frame, as the native game's crash report would.
-let stopped = false;
 function gameStopped(error) {
-    console.error('horizon: the game stopped', error);
-    if (stopped) return;
-    stopped = true;
-    const box = document.createElement('div');
-    box.className = 'horizon-stopped';
-    box.textContent = 'The game stopped working. Reload the page to play again (details in the browser console).';
-    document.body.append(box);
+    showFailure(error);
 }
 addEventListener('unhandledrejection', (event) => {
     console.error('horizon: unhandled', event.reason, event.reason?.stack);
