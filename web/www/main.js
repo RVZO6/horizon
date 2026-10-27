@@ -1,6 +1,6 @@
 // Starts the game: vanilla's Mojang Studios screen over the downloads, the wasm module with its
 // worker pool and file system, then horizon_run. `?arg=--world&arg=Test` passes command line
-// arguments (docs/native-client.md).
+// arguments and `?env=NAME=VALUE` environment variables (docs/native-client.md).
 import { LoadingOverlay } from './overlay.js';
 import { start } from './threads.js';
 import { loadBundle } from './files.js';
@@ -79,6 +79,11 @@ horizon.horizon_web_env('HOME', '/home/web');
 horizon.horizon_web_env('HORIZON_HOME', home);
 horizon.horizon_web_env('HORIZON_NO_DISCORD', '1');
 horizon.horizon_web_chdir(home);
+// `?env=NAME=VALUE` sets an environment variable (docs/native-client.md lists the game's).
+for (const pair of new URLSearchParams(location.search).getAll('env')) {
+    const at = pair.indexOf('=');
+    if (at > 0) horizon.horizon_web_env(pair.slice(0, at), pair.slice(at + 1));
+}
 const args = ['--resources', '/res', ...new URLSearchParams(location.search).getAll('arg')];
 for (const arg of args) horizon.horizon_web_arg(arg);
 await horizon.horizon_run();

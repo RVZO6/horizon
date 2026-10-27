@@ -184,9 +184,9 @@ impl Cull {
         adapter.features() & wgpu::Features::SHADER_EARLY_DEPTH_TEST
     }
     /// Where the device can run the test, if it can: Vulkan with early
-    /// depth tests, or Metal, both drawing an indirect multi-draw's entries
-    /// with the instance counts the GPU wrote, with fragment shaders that
-    /// write storage.
+    /// depth tests, or Metal and the browser's WebGPU, all drawing an indirect
+    /// multi-draw's entries with the instance counts the GPU wrote, with
+    /// fragment shaders that write storage.
     pub fn supported(adapter: &wgpu::Adapter, device: &wgpu::Device) -> Option<DepthTest> {
         let depth_test = match adapter.get_info().backend {
             wgpu::Backend::Vulkan
@@ -196,7 +196,7 @@ impl Cull {
             {
                 DepthTest::Early
             }
-            wgpu::Backend::Metal => DepthTest::InShader,
+            wgpu::Backend::Metal | wgpu::Backend::BrowserWebGpu => DepthTest::InShader,
             _ => return None,
         };
         (device
