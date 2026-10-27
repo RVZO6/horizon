@@ -39,10 +39,12 @@ class Handler(http.server.SimpleHTTPRequestHandler):
     def translate_path(self, path):
         path = path.split("?", 1)[0].split("#", 1)[0]
         if path.startswith("/fs/res/"):
-            relative = Path(http.server.urllib.parse.unquote(path[len("/fs/res/"):]))
-            if ".." in relative.parts:
+            relative = http.server.urllib.parse.unquote(path[len("/fs/res/"):])
+            # Only what resolves inside the resources: no absolute path, `..` or link out.
+            target = (self.resources / relative).resolve()
+            if not target.is_relative_to(self.resources):
                 return str(self.resources / "missing")
-            return str(self.resources / relative)
+            return str(target)
         return super().translate_path(path)
 
     def do_GET(self):
