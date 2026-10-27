@@ -13224,6 +13224,10 @@ impl ApplicationHandler for Game<'_> {
                     }
                 }
                 WindowEvent::RedrawRequested => {
+                    #[cfg(target_arch = "wasm32")]
+                    if !self.frame_due() {
+                        return Ok(());
+                    }
                     self.observe_fullscreen();
                     let now = Instant::now();
                     let frame_cpu = self
@@ -13487,7 +13491,7 @@ impl ApplicationHandler for Game<'_> {
                 w.request_redraw();
             }
         }
-        event_loop.set_control_flow(ControlFlow::Poll);
+        event_loop.set_control_flow(POLL);
     }
     /// The application is ending. On macOS, Quit (Cmd+Q) ends it through
     /// applicationWillTerminate without a CloseRequested; vanilla's GLFW
@@ -14863,6 +14867,14 @@ fn run_event_loop(mut game: Game<'_>) -> Result<()> {
     Ok(())
 }
 
+/// The event loop's flow between frames. A browser has no blocking present to pace a polling
+/// loop: there `Poll` schedules the next pass at once, over and over, and keeps the page's
+/// thread from its input. Waiting, the loop runs once a frame, for the redraw each pass asks.
+#[cfg(not(target_arch = "wasm32"))]
+const POLL: ControlFlow = ControlFlow::Poll;
+#[cfg(target_arch = "wasm32")]
+const POLL: ControlFlow = ControlFlow::Wait;
+
 /// The loading screen's state while the worker loads the resources.
 struct Loading {
     window: Option<Arc<Window>>,
@@ -15002,7 +15014,7 @@ impl Loading {
                 w.request_redraw();
             }
         }
-        event_loop.set_control_flow(ControlFlow::Poll);
+        event_loop.set_control_flow(POLL);
     }
     fn draw(&mut self) {
         let Some(size) = self

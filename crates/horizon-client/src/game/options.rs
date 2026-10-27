@@ -346,11 +346,29 @@ impl Game<'_> {
             .horizon
             .battery_limit(limit, self.title.is_none(), self.focused)
     }
+    /// The browser calls for a frame once per display refresh (`requestAnimationFrame`), as
+    /// vsync paces native frames, and its thread may not sleep: under a frame rate cap below
+    /// the display's, a frame that comes before its slot is skipped instead of waited for. A
+    /// quarter of the slot absorbs the callbacks' jitter.
+    #[cfg(target_arch = "wasm32")]
+    pub(super) fn frame_due(&mut self) -> bool {
+        let limit = self.framerate_limit();
+        let now = horizon_client::window::LimiterClock::nanos(&mut self.frame_clock);
+        if limit < 260 {
+            let slot = 1_000_000_000 / i64::from(limit);
+            if now < self.limiter.last_frame_time() + slot - slot / 4 {
+                return false;
+            }
+        }
+        self.limiter = horizon_client::window::FramerateLimiter::with_state(now, 0, limit);
+        true
+    }
     /// `Minecraft.runTick`'s frame limiter: `FramerateLimiter.limitDisplayFPS`
     /// below 260 frames per second, sleeping then spin-waiting until the
     /// frame's slot ends (not in scripted frame-count runs).
     pub(super) fn limit_frame(&mut self) {
-        if self.options.frames.is_some() {
+        // The browser's thread may not sleep: `frame_due` paces its frames.
+        if self.options.frames.is_some() || cfg!(target_arch = "wasm32") {
             return;
         }
         let limit = self.framerate_limit();
