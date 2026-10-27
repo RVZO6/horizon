@@ -901,6 +901,7 @@ thread_local! {
 #[cfg(target_arch = "wasm32")]
 pub async fn open_web_device() -> Result<()> {
     let opened = open_device(None, true, GraphicsApi::Auto, 1).await?;
+    animate::check_web_pipeline(&opened.device).await;
     WEB_DEVICE.with(|device| *device.borrow_mut() = Some(opened));
     Ok(())
 }

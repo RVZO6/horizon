@@ -363,25 +363,54 @@ impl SpriteAnimator {
     }
 }
 
-/// `animate.wgsl`'s pipeline, unless the device fails to make it: an OpenGL
-/// driver can list compute shaders among its extensions while wgpu writes
-/// the GLSL version of its core version, which has none (Mesa's
-/// `MESA_GL_VERSION_OVERRIDE`, older drivers).
-fn pipeline(device: &wgpu::Device) -> Option<wgpu::ComputePipeline> {
-    let validation = device.push_error_scope(wgpu::ErrorFilter::Validation);
-    let internal = device.push_error_scope(wgpu::ErrorFilter::Internal);
+fn make_pipeline(device: &wgpu::Device) -> wgpu::ComputePipeline {
     let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("Animated sprites"),
         source: wgpu::ShaderSource::Wgsl(include_str!("animate.wgsl").into()),
     });
-    let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+    device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
         label: Some("Animated sprites"),
         layout: None,
         module: &module,
         entry_point: Some("animate"),
         compilation_options: Default::default(),
         cache: None,
-    });
+    })
+}
+
+#[cfg(target_arch = "wasm32")]
+thread_local! {
+    /// Whether the browser makes `animate.wgsl`'s pipeline (`check_web_pipeline`).
+    static WEB_PIPELINE: std::cell::Cell<bool> = const { std::cell::Cell::new(true) };
+}
+
+/// The browser answers an error scope only once its thread returns to it, never inside the
+/// frame that makes the pipeline: `gfx::open_web_device` makes it once before the game starts
+/// and waits for the answer, so a browser that refuses it gets the CPU path.
+#[cfg(target_arch = "wasm32")]
+pub(super) async fn check_web_pipeline(device: &wgpu::Device) {
+    let validation = device.push_error_scope(wgpu::ErrorFilter::Validation);
+    let internal = device.push_error_scope(wgpu::ErrorFilter::Internal);
+    make_pipeline(device);
+    let internal = internal.pop().await;
+    if let Some(e) = internal.or(validation.pop().await) {
+        log::warn!("Horizon renderer: animated sprites drawn on the CPU ({e})");
+        WEB_PIPELINE.set(false);
+    }
+}
+
+/// `animate.wgsl`'s pipeline, unless the device fails to make it: an OpenGL
+/// driver can list compute shaders among its extensions while wgpu writes
+/// the GLSL version of its core version, which has none (Mesa's
+/// `MESA_GL_VERSION_OVERRIDE`, older drivers).
+fn pipeline(device: &wgpu::Device) -> Option<wgpu::ComputePipeline> {
+    #[cfg(target_arch = "wasm32")]
+    if !WEB_PIPELINE.get() {
+        return None;
+    }
+    let validation = device.push_error_scope(wgpu::ErrorFilter::Validation);
+    let internal = device.push_error_scope(wgpu::ErrorFilter::Internal);
+    let pipeline = make_pipeline(device);
     let internal = super::scope_error(internal.pop());
     match internal.or(super::scope_error(validation.pop())) {
         None => Some(pipeline),
