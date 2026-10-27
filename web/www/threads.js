@@ -7,8 +7,9 @@ const STACK = 8 * 1024 * 1024;
 
 // `wasm`: the module's response (or a promise of it), else it is fetched here. `files`: the
 // responses (or promises of them) of fs/index.txt and the bundles to load before the game starts
-// (web/bundle.py). `onProgress(done, total)` follows the bundles' bytes.
-export async function start({ pool = 32, wasm = undefined, files = null, onProgress = () => {} } = {}) {
+// (web/bundle.py). `onProgress(done, total)` follows the bundles' bytes, `onPool(fraction)` the
+// thread workers' start.
+export async function start({ pool = 32, wasm = undefined, files = null, onProgress = () => {}, onPool = () => {} } = {}) {
     const exports = await init(wasm === undefined ? undefined : { module_or_path: wasm });
     const module = init.__wbindgen_wasm_module;
     const memory = exports.memory;
@@ -24,7 +25,9 @@ export async function start({ pool = 32, wasm = undefined, files = null, onProgr
     const spawner = new Worker(new URL('./spawner.js', import.meta.url), { type: 'module', name: 'horizon-spawner' });
     await new Promise((resolve, reject) => {
         spawner.onerror = (event) => reject(event.error ?? new Error(event.message));
+        let started = 0;
         spawner.onmessage = ({ data }) => {
+            if (data?.horizon === 'started') onPool(++started / pool);
             if (data?.horizon === 'ready') resolve();
             if (data?.horizon === 'failed') reject(new Error(data.error));
         };

@@ -20,7 +20,9 @@ self.onmessage = async ({ data: { module, memory, stack, channel, pool } }) => {
         spawn().catch((error) => console.error('horizon: a thread worker failed to start', error));
     };
     try {
-        await Promise.all(Array.from({ length: pool }, spawn));
+        // Each worker of the first pool, for the loading bar.
+        const first = () => spawn().then(() => self.postMessage({ horizon: 'started' }));
+        await Promise.all(Array.from({ length: pool }, first));
         self.postMessage({ horizon: 'ready' });
     } catch (error) {
         self.postMessage({ horizon: 'failed', error: String(error) });

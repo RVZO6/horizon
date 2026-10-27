@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Horizon</title>
+<link rel="icon" href="data:,">
 <style>
   /* The Mojang Studios red (overlay.js) from the first paint. */
   html, body { margin: 0; height: 100%; overflow: hidden; background: rgb(239, 50, 61); }
@@ -11,6 +12,8 @@
   canvas { display: block; width: 100vw !important; height: 100vh !important; outline: none; }
   /* Vanilla's Mojang Studios screen (overlay.js) over the game's canvas. */
   canvas.horizon-overlay { position: fixed; inset: 0; z-index: 1; pointer-events: none; }
+  /* Once the overlay is gone, nothing red behind the game's canvas. */
+  html.horizon-running, html.horizon-running body { background: #000; }
 </style>
 </head>
 <body>

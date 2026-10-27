@@ -13394,6 +13394,13 @@ impl ApplicationHandler for Game<'_> {
                 return;
             }
         }
+        // The rest of the resources load after the loading screen: the page's Mojang Studios
+        // screen stays until they are in (vanilla's reload is done).
+        #[cfg(target_arch = "wasm32")]
+        horizon_web::loading(
+            self.rest_loader.as_ref().map_or(1.0, |l| l.progress.fraction()),
+            self.rest_loader.is_none(),
+        );
         // The browser takes Escape to let the pointer go: the game sees the Escape it ate.
         #[cfg(target_arch = "wasm32")]
         if horizon_web::take_pointer_lost()
@@ -14935,6 +14942,10 @@ impl Loading {
             Ok(r) => {
                 horizon_client::hud::GUI_SCALE.store(self.settings.gui_scale, Ordering::Relaxed);
                 self.renderer = Some(r);
+                // A reconfigured WebGPU canvas shows nothing until it is drawn: draw before the
+                // browser shows it.
+                #[cfg(target_arch = "wasm32")]
+                self.draw();
             }
             Err(e) => self.error = Some(e),
         }
@@ -14983,9 +14994,9 @@ impl Loading {
                 Err(e) => log::warn!("Horizon: loading screen frame failed: {e}"),
             }
         }
-        // The page's Mojang Studios screen covers the game's until it has one to show.
+        // The page's Mojang Studios screen covers the game's until every resource is loaded.
         #[cfg(target_arch = "wasm32")]
-        horizon_web::loading(self.progress.fraction(), self.gui.is_some());
+        horizon_web::loading(self.progress.fraction(), false);
         if !self.shown {
             self.shown = true;
             log::info!(
@@ -15127,7 +15138,19 @@ impl ApplicationHandler for App {
         };
         match step {
             Step::Waiting => {}
-            Step::Ready(game) => *self = App::Ready(game),
+            Step::Ready(game) => {
+                // The game's renderer reconfigured the WebGPU canvas, which shows nothing until
+                // drawn: draw before the browser shows it.
+                #[cfg(target_arch = "wasm32")]
+                let game = {
+                    let mut game = game;
+                    if let Some(id) = game.window.as_ref().map(|w| w.id()) {
+                        game.window_event(event_loop, id, WindowEvent::RedrawRequested);
+                    }
+                    game
+                };
+                *self = App::Ready(game);
+            }
             Step::Done => event_loop.exit(),
             Step::Failed(e) => {
                 if let App::Loading(loading) = self {

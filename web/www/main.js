@@ -25,12 +25,14 @@ const t0 = performance.now();
 const ms = () => Math.round(performance.now() - t0);
 const overlay = new LoadingOverlay('fs/res/assets/minecraft/textures/gui/title/mojangstudios.png');
 
-// The downloads start with the page. The bar follows their bytes, then the game's own loading.
+// The downloads start with the page. The bar follows their bytes, the thread workers' start, then
+// the game's own loading, to the end of its resources.
 const sizes = fetch('sizes.json').then((r) => r.json());
-const received = { wasm: 0, bundle: 0, game: 0 };
+const received = { wasm: 0, bundle: 0, pool: 0, game: 0 };
 const advance = async () => {
     const { wasm, startup } = await sizes;
-    overlay.setProgress(0.85 * Math.min((received.wasm + received.bundle) / (wasm + startup), 1) + 0.15 * received.game);
+    const downloads = Math.min((received.wasm + received.bundle) / (wasm + startup), 1);
+    overlay.setProgress(0.6 * downloads + 0.1 * received.pool + 0.3 * received.game);
 };
 const counted = (response, onBytes) =>
     response.then((r) => {
@@ -61,7 +63,11 @@ addEventListener('horizon-loading', ({ detail }) => {
     if (detail.ready) overlay.finish();
 });
 
-const { horizon, memory } = await start({ pool: 32, wasm, files, onProgress });
+const onPool = (fraction) => {
+    received.pool = fraction;
+    advance();
+};
+const { horizon, memory } = await start({ pool: 32, wasm, files, onProgress, onPool });
 // For the console and tests: the wasm memory's size.
 globalThis.horizonMemory = memory;
 console.log(`horizon-web: wasm and startup files ready after ${ms()} ms`);
