@@ -2,7 +2,8 @@
 """Serves web/dist for development, with the headers shared memory needs.
 
 `fs/res/...` maps to the prepared resources (default `.local/horizon-client/26.3`): the files the
-game fetches on demand. A bundle (web/bundle.py) goes brotli-compressed to a browser that takes it.
+game fetches on demand. A file with a `.br` beside it (the wasm module, the bundles) goes
+brotli-compressed to a browser that takes it, as a static host would send it.
 
     python3 web/serve.py [--host 127.0.0.1] [--port 8026] [--resources PATH] [--access-log PATH]
 
@@ -50,9 +51,9 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             # A new page load: times restart.
             Handler.started = time.monotonic()
         packed = Path(self.translate_path(path) + ".br")
-        if path.endswith(".bundle") and packed.is_file() and "br" in self.headers.get("Accept-Encoding", ""):
+        if packed.is_file() and "br" in self.headers.get("Accept-Encoding", ""):
             self.send_response(200)
-            self.send_header("Content-Type", "application/octet-stream")
+            self.send_header("Content-Type", self.guess_type(path))
             self.send_header("Content-Encoding", "br")
             self.send_header("Content-Length", str(packed.stat().st_size))
             self.end_headers()
@@ -72,7 +73,12 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             super().log_message(format, *args)
 
 
-Handler.extensions_map = {**Handler.extensions_map, ".wasm": "application/wasm", ".js": "text/javascript"}
+Handler.extensions_map = {
+    **Handler.extensions_map,
+    ".wasm": "application/wasm",
+    ".js": "text/javascript",
+    ".bundle": "application/octet-stream",
+}
 
 
 def main():

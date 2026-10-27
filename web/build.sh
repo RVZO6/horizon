@@ -56,7 +56,9 @@ rm -rf "$dist"
 mkdir -p "$dist"
 wasm-bindgen --target web --out-dir "$dist" --out-name horizon "$wasm"
 cp "$here"/www/* "$dist/"
-echo "Built $dist ($(du -h "$dist/horizon_bg.wasm" | cut -f1) wasm)"
+# Precompressed for a server that sends it with Content-Encoding: br.
+brotli -q 9 -f "$dist/horizon_bg.wasm"
+echo "Built $dist ($(du -h "$dist/horizon_bg.wasm" | cut -f1) wasm, $(du -h "$dist/horizon_bg.wasm.br" | cut -f1) brotli)"
 
 # 4. The resource bundles, when resources are prepared (docs/native-client.md).
 if [[ $what == game && -d $root/.local/horizon-client/26.3 ]]; then
