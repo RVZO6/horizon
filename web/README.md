@@ -1,6 +1,6 @@
 # Horizon in the browser
 
-The game, built for `wasm32-unknown-unknown` with threads, drawn with WebGPU.
+The game, built for `wasm32-unknown-unknown` with threads, drawn with WebGPU or WebGL2.
 
 ```sh
 web/build.sh             # the game (cargo profile `fast`) into web/dist; --release for LTO
@@ -10,12 +10,13 @@ python3 web/serve.py     # http://127.0.0.1:8026/, `?arg=--world&arg=Test` opens
 It needs a nightly toolchain with `rust-src` (`rustup toolchain install nightly --component
 rust-src --target wasm32-unknown-unknown`), `wasm-bindgen-cli` of the version in `Cargo.lock`,
 `brotli`, and prepared resources in `.local/horizon-client/26.3` (docs/native-client.md).
-A browser needs WebGPU and shared memory: a secure context (HTTPS or localhost) and the
+A browser needs WebGPU or WebGL2 and shared memory: a secure context (HTTPS or localhost) and the
 cross-origin isolation headers web/serve.py sends.
 
 The page checks these requirements before downloading the game and reports bootstrap errors on
-screen. Vanadium disables WebGPU by design, so it cannot run this WebGPU-only build with its
-standard configuration; see [GrapheneOS's Vanadium documentation](https://grapheneos.org/features#vanadium).
+screen. Vanadium disables WebGPU by design, so the build tries WebGL2 instead. Its other browser
+restrictions and performance still need testing on a physical phone; see
+[GrapheneOS's Vanadium documentation](https://grapheneos.org/features#vanadium).
 
 Startup checks: `node --test web/startup.test.mjs` (`python3 -m unittest discover -s tests` runs
 it when Node is installed).
@@ -39,7 +40,11 @@ it when Node is installed).
   first reads it.
 - **GPU.** WebGPU answers through promises, which settle only when the page's thread returns to
   the browser, so `horizon_run` opens the device before the game starts and error scopes count as
-  clean (`gfx::scope_error`).
+  clean (`gfx::scope_error`). If WebGPU has no usable device, WebGL2 opens after the window's canvas
+  exists. Its lower-capability path uses CPU sprite animation, smaller texture arrays and vertex
+  buffer offsets instead of base-vertex draws; GPU culling and indirect draws stay off. Append
+  `?env=WGPU_BACKEND=gl` to force WebGL2 for testing. Both the title and a generated world have been
+  checked in Chromium with WebGPU disabled; this does not establish physical-phone compatibility.
 - **Loading.** `www/overlay.js` is vanilla's Mojang Studios screen (26.3's `LoadingOverlay`) over
   the downloads, the thread workers' start and the game's start, then its fade into the title
   screen (the rest of the resources load behind it, as natively). It draws on a worker

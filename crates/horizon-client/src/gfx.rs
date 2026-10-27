@@ -510,6 +510,8 @@ pub struct Renderer {
     indirect_capacity: u64,
     /// Indirect draws may set `first_instance` (the section origin).
     pub multi_draw: bool,
+    /// WebGL2 offsets the vertex-buffer binding instead of using base-vertex draw calls.
+    base_vertex: bool,
     /// Per-frame scratch, kept to avoid allocating every frame.
     visible: Vec<resident::Visible>,
     visible_lods: Vec<lod::Visible>,
@@ -787,7 +789,10 @@ fn instance_descriptor(backends: wgpu::Backends) -> wgpu::InstanceDescriptor {
 /// the renderer's start (#746). macOS has Metal only.
 fn backend_order(api: GraphicsApi, os: &str, wgpu_backend: bool) -> Vec<wgpu::Backends> {
     use wgpu::Backends;
-    // The browser offers WebGPU alone.
+    #[cfg(target_arch = "wasm32")]
+    if WEB_GL.get() {
+        return vec![Backends::GL];
+    }
     if os == "macos" || wgpu_backend || cfg!(target_arch = "wasm32") {
         return vec![Backends::default()];
     }
@@ -894,16 +899,38 @@ pub(crate) fn scope_error(
 thread_local! {
     /// The device `open_web_device` opened, for the first `Renderer::new`.
     static WEB_DEVICE: std::cell::RefCell<Option<Opened>> = const { std::cell::RefCell::new(None) };
+    /// WebGL needs the window's canvas before it can expose an adapter. Its futures complete
+    /// synchronously, so unlike WebGPU it can be opened inside Renderer::new.
+    static WEB_GL: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 /// Opens the browser's GPU device before the game starts. WebGPU answers through promises, which
 /// only settle once the page's thread returns to the browser: never inside the frame where the
 /// game waits for its renderer (`pollster::block_on`).
 #[cfg(target_arch = "wasm32")]
 pub async fn open_web_device() -> Result<()> {
-    let opened = open_device(None, true, GraphicsApi::Auto, 1).await?;
+    if wgpu::Backends::from_env() == Some(wgpu::Backends::GL) {
+        use_webgl();
+        return Ok(());
+    }
+    let opened = match open_device(None, true, GraphicsApi::Auto, 1).await {
+        Ok(opened) => opened,
+        Err(error) if wgpu::Backends::from_env().is_none() => {
+            log::warn!("Horizon renderer: WebGPU unavailable ({error}); trying WebGL2");
+            use_webgl();
+            return Ok(());
+        }
+        Err(error) => return Err(error),
+    };
     animate::check_web_pipeline(&opened.device).await;
     WEB_DEVICE.with(|device| *device.borrow_mut() = Some(opened));
     Ok(())
+}
+#[cfg(target_arch = "wasm32")]
+fn use_webgl() {
+    WEB_GL.set(true);
+    // WebGL2 guarantees 256 array layers. Fix the split before the resource worker starts,
+    // rather than changing it later while CPU mip preparation may already be running.
+    horizon_web::horizon_web_env("HORIZON_SPRITE_SPLIT", &sprite_split().min(256).to_string());
 }
 /// Opens a device on the first of `backend_order`'s backends that gives one.
 /// Offscreen rendering needs no surface, so it can use a GPU the window's
@@ -1031,9 +1058,14 @@ const NO_GPU_DRIVER: &str = "No graphics driver with Vulkan, DirectX 12 or OpenG
      start the game again";
 #[cfg(target_os = "macos")]
 const NO_GPU_DRIVER: &str = "No Metal graphics device found";
-#[cfg(not(any(target_os = "windows", target_os = "macos")))]
+#[cfg(all(
+    not(target_arch = "wasm32"),
+    not(any(target_os = "windows", target_os = "macos"))
+))]
 const NO_GPU_DRIVER: &str = "No Vulkan or OpenGL graphics driver found: Horizon needs the Vulkan loader \
      (libvulkan.so.1) and a Vulkan driver for your GPU (Mesa's, or NVIDIA's), or OpenGL through EGL";
+#[cfg(target_arch = "wasm32")]
+const NO_GPU_DRIVER: &str = "No usable browser graphics device found (WebGPU or WebGL2)";
 /// Logs a step of the renderer's start, for a native crash in the graphics
 /// driver: it leaves no panic or crash report, so the log's last line is the
 /// only sign of where the game stopped. The log file is written unbuffered;
@@ -1508,7 +1540,9 @@ impl Renderer {
                             | wgpu::TextureUsages::COPY_DST
                             // Shader packs' atlas copies them (pack_atlas.rs).
                             | wgpu::TextureUsages::COPY_SRC
-                            | wgpu::TextureUsages::STORAGE_BINDING,
+                            | if animate::SpriteAnimator::compute(&adapter, &device) {
+                                wgpu::TextureUsages::STORAGE_BINDING
+                            } else { wgpu::TextureUsages::empty() },
                         view_formats: &[],
                     },
                     wgpu::util::TextureDataOrder::LayerMajor,
@@ -1603,7 +1637,11 @@ impl Renderer {
             size: instance_capacity * 16,
             usage: wgpu::BufferUsages::VERTEX
                 | wgpu::BufferUsages::COPY_DST
-                | wgpu::BufferUsages::STORAGE,
+                | if device.limits().max_storage_buffers_per_shader_stage > 0 {
+                    wgpu::BufferUsages::STORAGE
+                } else {
+                    wgpu::BufferUsages::empty()
+                },
             mapped_at_creation: false,
         });
         let outline = device.create_buffer(&wgpu::BufferDescriptor {
@@ -2495,6 +2533,11 @@ impl Renderer {
             )
         });
         let sorted_indices = arena::Arena::indices(&device, 1 << 16, flat.is_some());
+        let base_vertex = adapter
+            .get_downlevel_capabilities()
+            .flags
+            .contains(wgpu::DownlevelFlags::BASE_VERTEX)
+            && !(cfg!(target_arch = "wasm32") && info.backend == wgpu::Backend::Gl);
         let multi_draw = device
             .features()
             .contains(wgpu::Features::INDIRECT_FIRST_INSTANCE)
@@ -2672,6 +2715,7 @@ impl Renderer {
             indirect,
             indirect_capacity: 1024,
             multi_draw,
+            base_vertex,
             visible: Vec::new(),
             visible_lods: Vec::new(),
             shadow_visible: Vec::new(),
@@ -3098,11 +3142,35 @@ impl Renderer {
                 pass.multi_draw_indexed_indirect(indirect, offset, run as u32);
             } else {
                 for d in &draws[i..i + run] {
-                    pass.draw_indexed(d[2]..d[2] + d[0], d[3] as i32, d[4]..d[4] + 1);
+                    self.draw_indexed(
+                        pass,
+                        self.arena.buffer(page),
+                        std::mem::size_of::<TerrainVertex>() as u64,
+                        d[2]..d[2] + d[0],
+                        d[3] as i32,
+                        d[4]..d[4] + 1,
+                    );
                 }
             }
             i += run;
         }
+    }
+    /// Keep the same indices and vertices on WebGL2, which cannot add a base vertex at draw
+    /// time. Regular terrain/entity shaders read attributes, not the absolute vertex index.
+    fn draw_indexed(
+        &self,
+        pass: &mut wgpu::RenderPass<'_>,
+        buffer: &wgpu::Buffer,
+        stride: u64,
+        indices: std::ops::Range<u32>,
+        base: i32,
+        instances: std::ops::Range<u32>,
+    ) {
+        let (offset, base) = vertex_base(base, stride, self.base_vertex);
+        if !self.base_vertex {
+            pass.set_vertex_buffer(0, buffer.slice(offset..));
+        }
+        pass.draw_indexed(indices, base, instances);
     }
     fn release_section(&mut self, key: SectionKey) {
         if let Some(s) = self.sections.remove(key) {
@@ -3867,7 +3935,11 @@ impl Renderer {
                 size: self.instance_capacity * 16,
                 usage: wgpu::BufferUsages::VERTEX
                     | wgpu::BufferUsages::COPY_DST
-                    | wgpu::BufferUsages::STORAGE,
+                    | if self.device.limits().max_storage_buffers_per_shader_stage > 0 {
+                        wgpu::BufferUsages::STORAGE
+                    } else {
+                        wgpu::BufferUsages::empty()
+                    },
                 mapped_at_creation: false,
             });
         }
@@ -4796,14 +4868,24 @@ impl Renderer {
                 pass.set_pipeline(&self.entity_pipeline);
                 pass.set_bind_group(0, &self.entity_group, &[]);
                 pass.set_vertex_buffer(0, self.entity_buffer.slice(..));
-                pass.draw_indexed(0..entity_quads * 6, 0, 0..1);
+                self.draw_indexed(
+                    &mut pass,
+                    &self.entity_buffer,
+                    std::mem::size_of::<Vertex>() as u64,
+                    0..entity_quads * 6,
+                    0,
+                    0..1,
+                );
                 pass.set_bind_group(0, &self.group, &[]);
             }
             if translucent_item_quads > 0 {
                 pass.set_pipeline(&self.translucent_item_pipeline);
                 pass.set_bind_group(0, &self.entity_group, &[]);
                 pass.set_vertex_buffer(0, self.entity_buffer.slice(..));
-                pass.draw_indexed(
+                self.draw_indexed(
+                    &mut pass,
+                    &self.entity_buffer,
+                    std::mem::size_of::<Vertex>() as u64,
                     0..translucent_item_quads * 6,
                     ((world_quads - translucent_item_quads) * 4) as i32,
                     0..1,
@@ -4818,14 +4900,24 @@ impl Renderer {
                 pass.set_pipeline(&self.crumbling_pipeline);
                 pass.set_bind_group(0, &self.entity_group, &[]);
                 pass.set_vertex_buffer(0, self.entity_buffer.slice(..));
-                pass.draw_indexed(0..crumbling_quads * 6, (entity_quads * 4) as i32, 0..1);
+                self.draw_indexed(
+                    &mut pass,
+                    &self.entity_buffer,
+                    std::mem::size_of::<Vertex>() as u64,
+                    0..crumbling_quads * 6,
+                    (entity_quads * 4) as i32,
+                    0..1,
+                );
                 pass.set_bind_group(0, &self.group, &[]);
             }
             if shadow_quads > 0 {
                 pass.set_pipeline(&self.shadow_blob_pipeline);
                 pass.set_bind_group(0, &self.entity_group, &[]);
                 pass.set_vertex_buffer(0, self.entity_buffer.slice(..));
-                pass.draw_indexed(
+                self.draw_indexed(
+                    &mut pass,
+                    &self.entity_buffer,
+                    std::mem::size_of::<Vertex>() as u64,
                     0..shadow_quads * 6,
                     ((world_quads
                         - translucent_item_quads
@@ -4842,7 +4934,10 @@ impl Renderer {
                 pass.set_pipeline(&self.water_mask_pipeline);
                 pass.set_bind_group(0, &self.entity_group, &[]);
                 pass.set_vertex_buffer(0, self.entity_buffer.slice(..));
-                pass.draw_indexed(
+                self.draw_indexed(
+                    &mut pass,
+                    &self.entity_buffer,
+                    std::mem::size_of::<Vertex>() as u64,
                     0..water_mask_quads * 6,
                     ((entity_quads + crumbling_quads + translucent_crumbling_quads) * 4) as i32,
                     0..1,
@@ -4859,7 +4954,10 @@ impl Renderer {
                 pass.set_pipeline(&self.energy_swirl_pipeline);
                 pass.set_bind_group(0, &self.entity_group, &[]);
                 pass.set_vertex_buffer(0, self.entity_buffer.slice(..));
-                pass.draw_indexed(
+                self.draw_indexed(
+                    &mut pass,
+                    &self.entity_buffer,
+                    std::mem::size_of::<Vertex>() as u64,
                     0..swirl_quads * 6,
                     ((entity_quads
                         + crumbling_quads
@@ -4874,7 +4972,14 @@ impl Renderer {
                 pass.set_pipeline(&self.additive_pipeline);
                 pass.set_bind_group(0, &self.entity_group, &[]);
                 pass.set_vertex_buffer(0, self.entity_buffer.slice(..));
-                pass.draw_indexed(0..additive_quads * 6, (world_quads * 4) as i32, 0..1);
+                self.draw_indexed(
+                    &mut pass,
+                    &self.entity_buffer,
+                    std::mem::size_of::<Vertex>() as u64,
+                    0..additive_quads * 6,
+                    (world_quads * 4) as i32,
+                    0..1,
+                );
                 pass.set_bind_group(0, &self.group, &[]);
             }
             if outline_edges > 0 && !frame.outline_after_terrain {
@@ -4923,7 +5028,10 @@ impl Renderer {
                 pass.set_bind_group(0, &self.entity_group, &[]);
                 pass.set_index_buffer(self.indices.slice(..), wgpu::IndexFormat::Uint32);
                 pass.set_vertex_buffer(0, self.entity_buffer.slice(..));
-                pass.draw_indexed(
+                self.draw_indexed(
+                    &mut pass,
+                    &self.entity_buffer,
+                    std::mem::size_of::<Vertex>() as u64,
                     0..translucent_particle_quads * 6,
                     ((world_quads - translucent_item_quads - translucent_particle_quads) * 4)
                         as i32,
@@ -4953,7 +5061,10 @@ impl Renderer {
                 pass.set_pipeline(&self.crumbling_pipeline);
                 pass.set_bind_group(0, &self.entity_group, &[]);
                 pass.set_vertex_buffer(0, self.entity_buffer.slice(..));
-                pass.draw_indexed(
+                self.draw_indexed(
+                    &mut pass,
+                    &self.entity_buffer,
+                    std::mem::size_of::<Vertex>() as u64,
                     0..translucent_crumbling_quads * 6,
                     ((entity_quads + crumbling_quads) * 4) as i32,
                     0..1,
@@ -4971,7 +5082,10 @@ impl Renderer {
                 pass.set_pipeline(&self.see_through_pipeline);
                 pass.set_bind_group(0, &self.entity_group, &[]);
                 pass.set_vertex_buffer(0, self.entity_buffer.slice(..));
-                pass.draw_indexed(
+                self.draw_indexed(
+                    &mut pass,
+                    &self.entity_buffer,
+                    std::mem::size_of::<Vertex>() as u64,
                     0..see_through_quads * 6,
                     ((world_quads + additive_quads + hand_quads) * 4) as i32,
                     0..1,
@@ -5115,7 +5229,10 @@ impl Renderer {
             pass.set_bind_group(0, &self.hand_group, &[]);
             pass.set_index_buffer(self.indices.slice(..), wgpu::IndexFormat::Uint32);
             pass.set_vertex_buffer(0, self.entity_buffer.slice(..));
-            pass.draw_indexed(
+            self.draw_indexed(
+                &mut pass,
+                &self.entity_buffer,
+                std::mem::size_of::<Vertex>() as u64,
                 0..hand_quads * 6,
                 ((world_quads + additive_quads) * 4) as i32,
                 0..1,
@@ -5152,7 +5269,14 @@ impl Renderer {
                     crate::screen_effects::Blend::Vignette => 4,
                 };
                 pass.set_pipeline(&self.screen_pipelines[blend + (quad.sampling & 3) as usize]);
-                pass.draw_indexed(0..6, (i * 4) as i32, 0..1);
+                self.draw_indexed(
+                    &mut pass,
+                    &self.screen_buffer,
+                    std::mem::size_of::<crate::screen_effects::ScreenVertex>() as u64,
+                    0..6,
+                    (i * 4) as i32,
+                    0..1,
+                );
             }
         }
         // GameRenderer.render3dHud: the debug crosshair after the hand and
@@ -5486,8 +5610,37 @@ fn frustum(m: Mat4) -> [Vec4; 6] {
     planes.map(|p| p / p.truncate().length())
 }
 
+/// Emulate positive base vertices by moving the attribute buffer, without rewriting indices.
+fn vertex_base(base: i32, stride: u64, supported: bool) -> (u64, i32) {
+    if supported {
+        (0, base)
+    } else {
+        assert!(base >= 0, "Horizon draws use nonnegative base vertices");
+        (base as u64 * stride, 0)
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn vertex_base_preserves_native_draws() {
+        assert_eq!(super::vertex_base(256, 20, true), (0, 256));
+        assert_eq!(super::vertex_base(-4, 36, true), (0, -4));
+    }
+
+    #[test]
+    fn vertex_base_emulation_reads_the_same_attributes() {
+        for stride in [20, 36, 64] {
+            for base in [0, 4, 256, 4096] {
+                let (offset, draw_base) = super::vertex_base(base, stride, false);
+                assert_eq!(draw_base, 0);
+                for index in [0, 1, 2, 2, 3, 0, 97] {
+                    assert_eq!(offset + index * stride, (base as u64 + index) * stride);
+                }
+            }
+        }
+    }
+
     #[test]
     fn surface_is_8_bit_and_not_srgb() {
         use super::surface_format;
