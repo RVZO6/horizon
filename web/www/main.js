@@ -27,16 +27,22 @@ addEventListener('error', (event) => {
 });
 
 // A browser starts sound only after a gesture: resume the game's audio (cpal's AudioContext) on
-// the first click or key.
-const audioContexts = [];
-globalThis.AudioContext = class extends AudioContext {
-    constructor(...args) {
-        super(...args);
-        audioContexts.push(this);
-    }
-};
+// a click or key. The contexts are noted as they make their buffers (the bindings keep their own
+// reference to the AudioContext constructor, taken before this module runs).
+const audioContexts = new Set();
+for (const method of ['createBuffer', 'createBufferSource']) {
+    const original = BaseAudioContext.prototype[method];
+    BaseAudioContext.prototype[method] = function (...args) {
+        audioContexts.add(this);
+        return original.apply(this, args);
+    };
+}
 for (const type of ['pointerdown', 'keydown']) {
-    addEventListener(type, () => audioContexts.forEach((context) => context.resume()), true);
+    addEventListener(
+        type,
+        () => audioContexts.forEach((context) => context.state === 'suspended' && context.resume()),
+        true,
+    );
 }
 
 const t0 = performance.now();
