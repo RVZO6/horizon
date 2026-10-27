@@ -16,7 +16,7 @@ static ALLOCATOR: alloc::Allocator = alloc::Allocator;
 
 use std::cell::RefCell;
 use std::collections::VecDeque;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Condvar, Mutex};
 use wasm_bindgen::prelude::*;
 
@@ -171,6 +171,11 @@ pub unsafe extern "C" fn __horizon_web_fetch(path: *const u8, len: usize, out: *
 /// Threads waiting for a worker: `__horizon_std_thread_main` packets.
 static QUEUE: Mutex<VecDeque<usize>> = Mutex::new(VecDeque::new());
 static QUEUED: Condvar = Condvar::new();
+/// Workers waiting for a thread. The page starts a larger pool for the game's first burst of
+/// threads (web/www/main.js); after that, a taken worker is replaced only to keep this many
+/// ready, or while threads wait for one: each worker holds a stack of its own.
+static IDLE: AtomicUsize = AtomicUsize::new(0);
+const RESERVE: usize = 8;
 
 #[unsafe(no_mangle)]
 pub extern "C" fn __horizon_web_spawn(packet: *mut u8) -> i32 {
@@ -182,19 +187,24 @@ pub extern "C" fn __horizon_web_spawn(packet: *mut u8) -> i32 {
     0
 }
 
-/// A pooled worker: waits for a thread to run, tells the page to start a replacement, runs it.
+/// A pooled worker: waits for a thread to run, has the page start a replacement when the reserve
+/// runs low, runs the thread. The page then frees the worker (web/www/worker.js).
 #[wasm_bindgen]
 pub fn horizon_worker_main() {
-    let packet = {
+    let (packet, replace) = {
         let mut queue = QUEUE.lock().unwrap_or_else(|e| e.into_inner());
+        IDLE.fetch_add(1, Ordering::Relaxed);
         loop {
             if let Some(packet) = queue.pop_front() {
-                break packet;
+                let idle = IDLE.fetch_sub(1, Ordering::Relaxed) - 1;
+                break (packet, idle < RESERVE || !queue.is_empty());
             }
             queue = QUEUED.wait(queue).unwrap_or_else(|e| e.into_inner());
         }
     };
-    worker_taken();
+    if replace {
+        worker_taken();
+    }
     unsafe { __horizon_std_thread_main(packet as *mut u8) };
 }
 

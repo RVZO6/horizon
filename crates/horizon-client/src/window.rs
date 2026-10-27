@@ -336,8 +336,84 @@ pub fn icon() -> Option<winit::window::Icon> {
     winit::window::Icon::from_rgba(bytes, info.width, info.height).ok()
 }
 
+/// Frame pacing where the platform asks for each frame at the display's rate and the thread may
+/// not wait (a browser's `requestAnimationFrame`): under a cap below the display's rate, a
+/// frame asked for before its slot is skipped. Slots follow one another, so a cap the display's
+/// rate doesn't divide still averages out (120 on a 144 Hz display skips about one ask in six).
+#[derive(Clone, Copy, Debug, Default)]
+pub struct AskedFrames {
+    /// When the next slot starts.
+    due: i64,
+    /// The display's frame interval, from the time between asks.
+    interval: i64,
+    last_ask: Option<i64>,
+}
+
+impl AskedFrames {
+    /// Whether the frame asked for at `now` (ns) is drawn under `framerate_limit` (260 and over
+    /// is unlimited).
+    pub fn frame_due(&mut self, now: i64, framerate_limit: i32) -> bool {
+        if let Some(last) = self.last_ask.replace(now) {
+            let gap = now - last;
+            // A long pause (a hidden tab) says nothing of the display.
+            if gap > 0 && gap < 100_000_000 {
+                self.interval = if self.interval == 0 {
+                    gap
+                } else {
+                    (self.interval * 7 + gap) / 8
+                };
+            }
+        }
+        if framerate_limit >= 260 || self.interval == 0 {
+            self.due = now;
+            return true;
+        }
+        let slot = 1_000_000_000 / i64::from(framerate_limit);
+        // A cap the display's rate already meets.
+        if slot <= self.interval + self.interval / 20 {
+            self.due = now;
+            return true;
+        }
+        // Half a display interval absorbs the asks' jitter.
+        if now < self.due - self.interval / 2 {
+            return false;
+        }
+        // A frame more than a slot late starts the slots again rather than catching up.
+        self.due = if now - self.due > slot {
+            now + slot
+        } else {
+            self.due + slot
+        };
+        true
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    /// Frames drawn in `seconds` of asks every `1e9 / hz` ns (with a little jitter).
+    fn drawn(hz: f64, cap: i32, seconds: f64) -> usize {
+        let mut pacing = super::AskedFrames::default();
+        let asks = (hz * seconds) as i64;
+        (0..asks)
+            .filter(|&i| {
+                let jitter = [0, 300_000, -200_000, 100_000][(i % 4) as usize];
+                pacing.frame_due((i as f64 * 1e9 / hz) as i64 + jitter, cap)
+            })
+            .count()
+    }
+
+    #[test]
+    fn asked_frames_keep_to_the_cap() {
+        // A cap the display meets, or unlimited: every frame.
+        assert_eq!(drawn(120.0, 120, 10.0), 1200);
+        assert_eq!(drawn(60.0, 120, 10.0), 600);
+        assert_eq!(drawn(144.0, 260, 10.0), 1440);
+        // Below the display's rate: the cap, on average.
+        assert!((1190..=1205).contains(&drawn(144.0, 120, 10.0)));
+        assert!((595..=605).contains(&drawn(120.0, 60, 10.0)));
+        assert!((295..=305).contains(&drawn(120.0, 30, 10.0)));
+    }
+
     use super::*;
 
     #[test]

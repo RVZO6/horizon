@@ -1578,6 +1578,9 @@ struct Game<'a> {
     view: horizon_client::camera::Camera,
     /// `FramerateLimiter` and its clock.
     limiter: horizon_client::window::FramerateLimiter,
+    /// The browser's frame pacing (`frame_due`).
+    #[cfg(target_arch = "wasm32")]
+    asked_frames: horizon_client::window::AskedFrames,
     frame_clock: horizon_client::window::SystemClock,
     /// Hud.scopeScale (spyglass overlay size).
     scope_scale: f32,
@@ -13710,6 +13713,8 @@ impl<'a> Game<'a> {
             using: None,
             view: Default::default(),
             limiter: horizon_client::window::FramerateLimiter::new(0),
+            #[cfg(target_arch = "wasm32")]
+            asked_frames: Default::default(),
             frame_clock: Default::default(),
             scope_scale: 0.5,
             frame_ticks: 0.0,

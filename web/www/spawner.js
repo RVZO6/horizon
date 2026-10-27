@@ -15,7 +15,7 @@ self.onmessage = async ({ data: { module, memory, stack, channel, pool } }) => {
             };
             worker.postMessage({ module, memory, stack, channel });
         });
-    // A worker that takes a thread asks for its replacement here.
+    // A worker that takes a thread asks for a replacement here when the reserve runs low.
     new BroadcastChannel(channel).onmessage = () => {
         spawn().catch((error) => console.error('horizon: a thread worker failed to start', error));
     };

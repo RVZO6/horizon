@@ -1,6 +1,6 @@
 diff -ruN library.orig/std/src/sys/args/mod.rs library/std/src/sys/args/mod.rs
---- library.orig/std/src/sys/args/mod.rs	2026-10-27 13:37:20
-+++ library/std/src/sys/args/mod.rs	2026-10-27 13:37:22
+--- library.orig/std/src/sys/args/mod.rs	2026-10-27 14:01:34
++++ library/std/src/sys/args/mod.rs	2026-10-27 14:01:37
 @@ -64,6 +64,10 @@
          mod zkvm;
          pub use zkvm::*;
@@ -14,7 +14,7 @@ diff -ruN library.orig/std/src/sys/args/mod.rs library/std/src/sys/args/mod.rs
          pub use unsupported::*;
 diff -ruN library.orig/std/src/sys/args/web.rs library/std/src/sys/args/web.rs
 --- library.orig/std/src/sys/args/web.rs	1969-12-31 19:00:00
-+++ library/std/src/sys/args/web.rs	2026-10-27 13:37:22
++++ library/std/src/sys/args/web.rs	2026-10-27 14:01:37
 @@ -0,0 +1,44 @@
 +//! The arguments the program pushed with `__horizon_std_push_arg`.
 +use crate::ffi::OsString;
@@ -61,8 +61,8 @@ diff -ruN library.orig/std/src/sys/args/web.rs library/std/src/sys/args/web.rs
 +    }
 +}
 diff -ruN library.orig/std/src/sys/env/mod.rs library/std/src/sys/env/mod.rs
---- library.orig/std/src/sys/env/mod.rs	2026-10-27 13:37:20
-+++ library/std/src/sys/env/mod.rs	2026-10-27 13:37:22
+--- library.orig/std/src/sys/env/mod.rs	2026-10-27 14:01:34
++++ library/std/src/sys/env/mod.rs	2026-10-27 14:01:37
 @@ -11,6 +11,7 @@
      target_os = "uefi",
      target_os = "wasi",
@@ -84,7 +84,7 @@ diff -ruN library.orig/std/src/sys/env/mod.rs library/std/src/sys/env/mod.rs
          mod unsupported;
 diff -ruN library.orig/std/src/sys/env/web.rs library/std/src/sys/env/web.rs
 --- library.orig/std/src/sys/env/web.rs	1969-12-31 19:00:00
-+++ library/std/src/sys/env/web.rs	2026-10-27 13:37:22
++++ library/std/src/sys/env/web.rs	2026-10-27 14:01:37
 @@ -0,0 +1,23 @@
 +//! An environment kept in memory (`sys::web::ENV`), set by the program.
 +pub use super::common::Env;
@@ -111,7 +111,7 @@ diff -ruN library.orig/std/src/sys/env/web.rs library/std/src/sys/env/web.rs
 +}
 diff -ruN library.orig/std/src/sys/fs/memfs.rs library/std/src/sys/fs/memfs.rs
 --- library.orig/std/src/sys/fs/memfs.rs	1969-12-31 19:00:00
-+++ library/std/src/sys/fs/memfs.rs	2026-10-27 13:58:25
++++ library/std/src/sys/fs/memfs.rs	2026-10-27 14:01:37
 @@ -0,0 +1,756 @@
 +//! An in-memory file system for the browser build. Paths are made absolute against the working
 +//! directory (`sys::paths::getcwd`); a file registered with `__horizon_std_memfs_lazy` is fetched
@@ -870,8 +870,8 @@ diff -ruN library.orig/std/src/sys/fs/memfs.rs library/std/src/sys/fs/memfs.rs
 +    Ok(bytes.len() as u64)
 +}
 diff -ruN library.orig/std/src/sys/fs/mod.rs library/std/src/sys/fs/mod.rs
---- library.orig/std/src/sys/fs/mod.rs	2026-10-27 13:37:20
-+++ library/std/src/sys/fs/mod.rs	2026-10-27 13:37:22
+--- library.orig/std/src/sys/fs/mod.rs	2026-10-27 14:01:34
++++ library/std/src/sys/fs/mod.rs	2026-10-27 14:01:37
 @@ -47,6 +47,10 @@
          mod vexos;
          use vexos as imp;
@@ -884,8 +884,8 @@ diff -ruN library.orig/std/src/sys/fs/mod.rs library/std/src/sys/fs/mod.rs
          mod unsupported;
          use unsupported as imp;
 diff -ruN library.orig/std/src/sys/mod.rs library/std/src/sys/mod.rs
---- library.orig/std/src/sys/mod.rs	2026-10-27 13:37:20
-+++ library/std/src/sys/mod.rs	2026-10-27 13:37:22
+--- library.orig/std/src/sys/mod.rs	2026-10-27 14:01:34
++++ library/std/src/sys/mod.rs	2026-10-27 14:01:37
 @@ -28,6 +28,8 @@
  pub mod thread;
  pub mod thread_local;
@@ -896,8 +896,8 @@ diff -ruN library.orig/std/src/sys/mod.rs library/std/src/sys/mod.rs
  // FIXME(117276): remove this, move feature implementations into individual
  //                submodules.
 diff -ruN library.orig/std/src/sys/paths/mod.rs library/std/src/sys/paths/mod.rs
---- library.orig/std/src/sys/paths/mod.rs	2026-10-27 13:37:20
-+++ library/std/src/sys/paths/mod.rs	2026-10-27 13:37:22
+--- library.orig/std/src/sys/paths/mod.rs	2026-10-27 14:01:34
++++ library/std/src/sys/paths/mod.rs	2026-10-27 14:01:37
 @@ -58,6 +58,18 @@
          mod windows;
          use windows as imp;
@@ -919,7 +919,7 @@ diff -ruN library.orig/std/src/sys/paths/mod.rs library/std/src/sys/paths/mod.rs
          use unsupported as imp;
 diff -ruN library.orig/std/src/sys/paths/web.rs library/std/src/sys/paths/web.rs
 --- library.orig/std/src/sys/paths/web.rs	1969-12-31 19:00:00
-+++ library/std/src/sys/paths/web.rs	2026-10-27 13:37:22
++++ library/std/src/sys/paths/web.rs	2026-10-27 14:01:37
 @@ -0,0 +1,36 @@
 +//! The working directory, home and temp folders of the in-memory file system (`sys::fs::memfs`).
 +use crate::io;
@@ -958,8 +958,8 @@ diff -ruN library.orig/std/src/sys/paths/web.rs library/std/src/sys/paths/web.rs
 +    )
 +}
 diff -ruN library.orig/std/src/sys/process/unsupported.rs library/std/src/sys/process/unsupported.rs
---- library.orig/std/src/sys/process/unsupported.rs	2026-10-27 13:37:20
-+++ library/std/src/sys/process/unsupported.rs	2026-10-27 13:37:22
+--- library.orig/std/src/sys/process/unsupported.rs	2026-10-27 14:01:34
++++ library/std/src/sys/process/unsupported.rs	2026-10-27 14:01:37
 @@ -332,5 +332,11 @@
  }
  
@@ -974,8 +974,8 @@ diff -ruN library.orig/std/src/sys/process/unsupported.rs library/std/src/sys/pr
 +    }
  }
 diff -ruN library.orig/std/src/sys/stdio/mod.rs library/std/src/sys/stdio/mod.rs
---- library.orig/std/src/sys/stdio/mod.rs	2026-10-27 13:37:20
-+++ library/std/src/sys/stdio/mod.rs	2026-10-27 13:37:22
+--- library.orig/std/src/sys/stdio/mod.rs	2026-10-27 14:01:34
++++ library/std/src/sys/stdio/mod.rs	2026-10-27 14:01:37
 @@ -45,6 +45,10 @@
          mod zkvm;
          pub use zkvm::*;
@@ -989,7 +989,7 @@ diff -ruN library.orig/std/src/sys/stdio/mod.rs library/std/src/sys/stdio/mod.rs
          pub use unsupported::*;
 diff -ruN library.orig/std/src/sys/stdio/web.rs library/std/src/sys/stdio/web.rs
 --- library.orig/std/src/sys/stdio/web.rs	1969-12-31 19:00:00
-+++ library/std/src/sys/stdio/web.rs	2026-10-27 13:37:22
++++ library/std/src/sys/stdio/web.rs	2026-10-27 14:01:37
 @@ -0,0 +1,71 @@
 +//! Standard output and error go to the browser's console (`sys::web::print`); stdin is empty.
 +use crate::io::{self, BorrowedCursor, IoSliceMut};
@@ -1063,8 +1063,8 @@ diff -ruN library.orig/std/src/sys/stdio/web.rs library/std/src/sys/stdio/web.rs
 +    Some(Stderr::new())
 +}
 diff -ruN library.orig/std/src/sys/sync/futex/wasm.rs library/std/src/sys/sync/futex/wasm.rs
---- library.orig/std/src/sys/sync/futex/wasm.rs	2026-10-27 13:37:20
-+++ library/std/src/sys/sync/futex/wasm.rs	2026-10-27 13:37:22
+--- library.orig/std/src/sys/sync/futex/wasm.rs	2026-10-27 14:01:34
++++ library/std/src/sys/sync/futex/wasm.rs	2026-10-27 14:01:37
 @@ -22,6 +22,11 @@
  ///
  /// Returns false on timeout, and true in all other cases.
@@ -1078,8 +1078,8 @@ diff -ruN library.orig/std/src/sys/sync/futex/wasm.rs library/std/src/sys/sync/f
      unsafe {
          wasm::memory_atomic_wait32(
 diff -ruN library.orig/std/src/sys/thread/mod.rs library/std/src/sys/thread/mod.rs
---- library.orig/std/src/sys/thread/mod.rs	2026-10-27 13:37:20
-+++ library/std/src/sys/thread/mod.rs	2026-10-27 13:37:22
+--- library.orig/std/src/sys/thread/mod.rs	2026-10-27 14:01:34
++++ library/std/src/sys/thread/mod.rs	2026-10-27 14:01:37
 @@ -100,6 +100,13 @@
              DEFAULT_MIN_STACK_SIZE, Thread, available_parallelism, current_os_id, set_name,
          };
@@ -1096,8 +1096,8 @@ diff -ruN library.orig/std/src/sys/thread/mod.rs library/std/src/sys/thread/mod.
          pub use wasm::sleep;
 diff -ruN library.orig/std/src/sys/thread/web.rs library/std/src/sys/thread/web.rs
 --- library.orig/std/src/sys/thread/web.rs	1969-12-31 19:00:00
-+++ library/std/src/sys/thread/web.rs	2026-10-27 13:37:22
-@@ -0,0 +1,83 @@
++++ library/std/src/sys/thread/web.rs	2026-10-27 16:35:59
+@@ -0,0 +1,88 @@
 +//! Threads on Web Workers: the program's `__horizon_web_spawn` starts a worker on the shared
 +//! memory, and the worker calls `__horizon_std_thread_main` with the packet.
 +use crate::ffi::CStr;
@@ -1153,6 +1153,11 @@ diff -ruN library.orig/std/src/sys/thread/web.rs library/std/src/sys/thread/web.
 +    let Packet { init, done } = *packet;
 +    let start = init.init();
 +    start();
++    // What a thread's exit runs elsewhere, which std's wasm guard leaves to the runtime (and so
++    // leaks): its thread-locals' destructors, then the runtime's cleanup. The page then frees
++    // the worker's stack and thread-local block (web/www/worker.js).
++    unsafe { crate::sys::thread_local::destructors::run() };
++    crate::rt::thread_cleanup();
 +    done.store(1, Ordering::Release);
 +    unsafe { core::arch::wasm32::memory_atomic_notify(done.as_ptr().cast(), u32::MAX) };
 +}
@@ -1182,8 +1187,8 @@ diff -ruN library.orig/std/src/sys/thread/web.rs library/std/src/sys/thread/web.
 +    }
 +}
 diff -ruN library.orig/std/src/sys/time/mod.rs library/std/src/sys/time/mod.rs
---- library.orig/std/src/sys/time/mod.rs	2026-10-27 13:37:20
-+++ library/std/src/sys/time/mod.rs	2026-10-27 13:37:22
+--- library.orig/std/src/sys/time/mod.rs	2026-10-27 14:01:34
++++ library/std/src/sys/time/mod.rs	2026-10-27 14:01:37
 @@ -36,6 +36,10 @@
          mod xous;
          use xous as imp;
@@ -1197,7 +1202,7 @@ diff -ruN library.orig/std/src/sys/time/mod.rs library/std/src/sys/time/mod.rs
          use unsupported as imp;
 diff -ruN library.orig/std/src/sys/time/web.rs library/std/src/sys/time/web.rs
 --- library.orig/std/src/sys/time/web.rs	1969-12-31 19:00:00
-+++ library/std/src/sys/time/web.rs	2026-10-27 13:37:22
++++ library/std/src/sys/time/web.rs	2026-10-27 14:01:37
 @@ -0,0 +1,51 @@
 +//! Both clocks read the browser's: see `sys::web::now`.
 +use crate::sys::web;
@@ -1252,7 +1257,7 @@ diff -ruN library.orig/std/src/sys/time/web.rs library/std/src/sys/time/web.rs
 +}
 diff -ruN library.orig/std/src/sys/web.rs library/std/src/sys/web.rs
 --- library.orig/std/src/sys/web.rs	1969-12-31 19:00:00
-+++ library/std/src/sys/web.rs	2026-10-27 13:37:22
++++ library/std/src/sys/web.rs	2026-10-27 14:01:37
 @@ -0,0 +1,105 @@
 +//! Horizon's browser build: wasm32-unknown-unknown with atomics, each thread a Web Worker.
 +//!
