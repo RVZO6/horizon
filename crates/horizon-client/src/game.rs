@@ -14972,6 +14972,9 @@ impl Loading {
                 Err(e) => log::warn!("Horizon: loading screen frame failed: {e}"),
             }
         }
+        // The page's Mojang Studios screen covers the game's until it has one to show.
+        #[cfg(target_arch = "wasm32")]
+        horizon_web::loading(self.progress.fraction(), self.gui.is_some());
         if !self.shown {
             self.shown = true;
             log::info!(

@@ -1,5 +1,7 @@
-// Starts the game: the wasm module with its worker pool, the file system, then horizon_run.
-// `?arg=--world&arg=Test` passes command line arguments (docs/native-client.md).
+// Starts the game: vanilla's Mojang Studios screen over the downloads, the wasm module with its
+// worker pool and file system, then horizon_run. `?arg=--world&arg=Test` passes command line
+// arguments (docs/native-client.md).
+import { LoadingOverlay } from './overlay.js';
 import { start } from './threads.js';
 import { loadBundle } from './files.js';
 
@@ -8,9 +10,45 @@ addEventListener('error', (event) => console.error('horizon: error', event.messa
 
 const t0 = performance.now();
 const ms = () => Math.round(performance.now() - t0);
-// The downloads start with the page, beside the wasm module's.
+const overlay = new LoadingOverlay('fs/res/assets/minecraft/textures/gui/title/mojangstudios.png');
+
+// The downloads start with the page. The bar follows their bytes, then the game's own loading.
+const sizes = fetch('sizes.json').then((r) => r.json());
+const received = { wasm: 0, bundle: 0, game: 0 };
+const advance = async () => {
+    const { wasm, startup } = await sizes;
+    overlay.setProgress(0.85 * Math.min((received.wasm + received.bundle) / (wasm + startup), 1) + 0.15 * received.game);
+};
+const counted = (response, onBytes) =>
+    response.then((r) => {
+        if (!r.ok) return r;
+        const reader = r.body.getReader();
+        const body = new ReadableStream({
+            async pull(controller) {
+                const { value, done } = await reader.read();
+                if (done) return controller.close();
+                onBytes(value.length);
+                controller.enqueue(value);
+            },
+        });
+        return new Response(body, { headers: { 'Content-Type': 'application/wasm' } });
+    });
+const wasm = counted(fetch('horizon_bg.wasm'), (n) => {
+    received.wasm += n;
+    advance();
+});
 const files = { index: fetch('fs/index.txt'), bundles: [fetch('fs/startup.bundle')] };
-const { horizon, memory } = await start({ pool: 32, files });
+const onProgress = (done) => {
+    received.bundle = done;
+    advance();
+};
+addEventListener('horizon-loading', ({ detail }) => {
+    received.game = detail.progress;
+    advance();
+    if (detail.ready) overlay.finish();
+});
+
+const { horizon, memory } = await start({ pool: 32, wasm, files, onProgress });
 // For the console and tests: the wasm memory's size.
 globalThis.horizonMemory = memory;
 console.log(`horizon-web: wasm and startup files ready after ${ms()} ms`);

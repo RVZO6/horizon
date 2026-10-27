@@ -5,10 +5,11 @@ import { loadBundle } from './files.js';
 // Every thread's stack, as the main thread's (web/build.sh): wasm has no guard page.
 const STACK = 8 * 1024 * 1024;
 
-// `files`: the responses (or promises of them) of fs/index.txt and the bundles to load before the
-// game starts (web/bundle.py). `onProgress(done, total)` follows the bundles' bytes.
-export async function start({ pool = 32, files = null, onProgress = () => {} } = {}) {
-    const exports = await init();
+// `wasm`: the module's response (or a promise of it), else it is fetched here. `files`: the
+// responses (or promises of them) of fs/index.txt and the bundles to load before the game starts
+// (web/bundle.py). `onProgress(done, total)` follows the bundles' bytes.
+export async function start({ pool = 32, wasm = undefined, files = null, onProgress = () => {} } = {}) {
+    const exports = await init(wasm === undefined ? undefined : { module_or_path: wasm });
     const module = init.__wbindgen_wasm_module;
     const memory = exports.memory;
     horizon.horizon_web_main_thread();

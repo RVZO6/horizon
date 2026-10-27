@@ -61,4 +61,7 @@ echo "Built $dist ($(du -h "$dist/horizon_bg.wasm" | cut -f1) wasm)"
 # 4. The resource bundles, when resources are prepared (docs/native-client.md).
 if [[ $what == game && -d $root/.local/horizon-client/26.3 ]]; then
     python3 "$here/bundle.py" --resources "$root/.local/horizon-client/26.3" --out "$dist/fs"
+    # The loading bar's totals: the bytes the page receives once decompressed.
+    printf '{"wasm": %d, "startup": %d}\n' "$(wc -c < "$dist/horizon_bg.wasm")" \
+        "$(wc -c < "$dist/fs/startup.bundle")" > "$dist/sizes.json"
 fi

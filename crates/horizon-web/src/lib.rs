@@ -53,6 +53,9 @@ export function fetch_sync(path) {
     for (let i = 0; i < text.length; i++) out[i] = text.charCodeAt(i) & 0xff;
     return out;
 }
+export function loading(progress, ready) {
+    self.dispatchEvent(new CustomEvent('horizon-loading', { detail: { progress, ready } }));
+}
 // web/www/spawner.js starts a replacement.
 export function worker_taken() {
     self.horizonThreads ??= new BroadcastChannel(self.horizonChannel);
@@ -65,6 +68,14 @@ extern "C" {
     fn print(fd: u32, text: &str);
     fn fetch_sync(path: &str) -> Option<js_sys::Uint8Array>;
     fn worker_taken();
+    #[wasm_bindgen(js_name = loading)]
+    fn loading_event(progress: f32, ready: bool);
+}
+
+/// The game's loading screen, for the page's (web/www/overlay.js): how far the resources are, and
+/// whether the game has a screen of its own to show.
+pub fn loading(progress: f32, ready: bool) {
+    loading_event(progress, ready);
 }
 
 unsafe extern "C" {

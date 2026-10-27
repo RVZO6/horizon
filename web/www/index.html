@@ -5,9 +5,12 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Horizon</title>
 <style>
-  html, body { margin: 0; height: 100%; overflow: hidden; background: #000; }
+  /* The Mojang Studios red (overlay.js) from the first paint. */
+  html, body { margin: 0; height: 100%; overflow: hidden; background: rgb(239, 50, 61); }
   /* winit sizes the canvas inline; the page decides. */
   canvas { display: block; width: 100vw !important; height: 100vh !important; outline: none; }
+  /* Vanilla's Mojang Studios screen (overlay.js) over the game's canvas. */
+  canvas.horizon-overlay { position: fixed; inset: 0; z-index: 1; pointer-events: none; }
 </style>
 </head>
 <body>
