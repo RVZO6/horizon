@@ -122,6 +122,7 @@ unsafe extern "C" {
     fn __horizon_std_push_arg(ptr: *const u8, len: usize);
     fn __horizon_std_memfs_lazy(ptr: *const u8, len: usize, size: u64);
     fn __horizon_std_memfs_insert(ptr: *const u8, len: usize, data: *mut u8);
+    fn __horizon_std_failure_flag() -> *const u8;
 }
 
 #[unsafe(no_mangle)]
@@ -206,6 +207,13 @@ pub fn horizon_worker_main() {
         worker_taken();
     }
     unsafe { __horizon_std_thread_main(packet as *mut u8) };
+}
+
+/// The byte the page sets in the shared memory when a thread failed (web/www/worker.js): a
+/// thread spinning on it stops instead of waiting forever.
+#[wasm_bindgen]
+pub fn horizon_web_failure_flag() -> usize {
+    unsafe { __horizon_std_failure_flag() as usize }
 }
 
 /// The page's main thread calls this first: from now on it spins where std would block.

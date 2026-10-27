@@ -59,6 +59,15 @@ mod probe {
         })
     }
 
+    /// The page's thread joins a thread that panics (and so traps, with panic=abort): the join
+    /// must end, with a trap, instead of spinning forever.
+    #[wasm_bindgen]
+    pub fn web_probe_failing_thread() -> String {
+        let thread = std::thread::spawn(|| panic!("a probe thread fails on purpose"));
+        let joined = thread.join();
+        format!("the join returned: {joined:?}")
+    }
+
     #[wasm_bindgen]
     pub fn web_probe() -> Result<String, JsError> {
         let mut report = Vec::new();

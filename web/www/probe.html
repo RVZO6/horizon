@@ -13,6 +13,14 @@ try {
     const { horizon } = await start({ pool: 8, files: { index: fetch('fs/index.txt') } });
     horizon.horizon_web_chdir('/home/web/probe-home');
     out.textContent = horizon.web_probe();
+    // `?fail`: a thread that fails while this one joins it (crates/horizon-web, web_probe).
+    if (location.search.includes('fail')) {
+        try {
+            out.textContent += '\n' + horizon.web_probe_failing_thread();
+        } catch (error) {
+            out.textContent += `\nthe join stopped: ${error}`;
+        }
+    }
 } catch (e) {
     out.textContent = `failed: ${e}\n${e.stack ?? ''}`;
     console.error(e);

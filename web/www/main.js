@@ -5,8 +5,26 @@ import { LoadingOverlay } from './overlay.js';
 import { start } from './threads.js';
 import { loadBundle } from './files.js';
 
-addEventListener('unhandledrejection', (event) => console.error('horizon: unhandled', event.reason, event.reason?.stack));
-addEventListener('error', (event) => console.error('horizon: error', event.message, event.error?.stack));
+// The game stopped (a thread trapped, as a panic aborts, or a worker could not start): say so
+// over the frozen frame, as the native game's crash report would.
+let stopped = false;
+function gameStopped(error) {
+    console.error('horizon: the game stopped', error);
+    if (stopped) return;
+    stopped = true;
+    const box = document.createElement('div');
+    box.className = 'horizon-stopped';
+    box.textContent = 'The game stopped working. Reload the page to play again (details in the browser console).';
+    document.body.append(box);
+}
+addEventListener('unhandledrejection', (event) => {
+    console.error('horizon: unhandled', event.reason, event.reason?.stack);
+    if (event.reason instanceof WebAssembly.RuntimeError) gameStopped(event.reason);
+});
+addEventListener('error', (event) => {
+    console.error('horizon: error', event.message, event.error?.stack);
+    if (event.error instanceof WebAssembly.RuntimeError) gameStopped(event.error);
+});
 
 // A browser starts sound only after a gesture: resume the game's audio (cpal's AudioContext) on
 // the first click or key.
@@ -70,7 +88,7 @@ const onPool = (fraction) => {
     received.pool = fraction;
     advance();
 };
-const { horizon, memory } = await start({ pool: 32, wasm, files, onProgress, onPool });
+const { horizon, memory } = await start({ pool: 32, wasm, files, onProgress, onPool, onThreadFailed: gameStopped });
 // For the console and tests: the wasm memory's size.
 globalThis.horizonMemory = memory;
 console.log(`horizon-web: wasm and startup files ready after ${ms()} ms`);

@@ -14,6 +14,9 @@
   canvas.horizon-overlay { position: fixed; inset: 0; z-index: 1; pointer-events: none; }
   /* Once the overlay is gone, nothing red behind the game's canvas. */
   html.horizon-running, html.horizon-running body { background: #000; }
+  /* main.js: the game stopped. */
+  .horizon-stopped { position: fixed; inset: auto 0 40%; z-index: 2; padding: 16px; text-align: center;
+    color: #fff; background: rgba(0, 0, 0, 0.75); font: 16px system-ui, sans-serif; }
 </style>
 </head>
 <body>

@@ -8,8 +8,16 @@ const STACK = 8 * 1024 * 1024;
 // `wasm`: the module's response (or a promise of it), else it is fetched here. `files`: the
 // responses (or promises of them) of fs/index.txt and the bundles to load before the game starts
 // (web/bundle.py). `onProgress(done, total)` follows the bundles' bytes, `onPool(fraction)` the
-// thread workers' start.
-export async function start({ pool = 32, wasm = undefined, files = null, onProgress = () => {}, onPool = () => {} } = {}) {
+// thread workers' start, `onThreadFailed(error)` a thread that trapped or a worker that could not
+// start.
+export async function start({
+    pool = 32,
+    wasm = undefined,
+    files = null,
+    onProgress = () => {},
+    onPool = () => {},
+    onThreadFailed = () => {},
+} = {}) {
     // Compiled once here, and the same module to every worker: a worker given none fetches and
     // compiles the whole program again.
     const module = await WebAssembly.compileStreaming(wasm ?? fetch(new URL('./horizon_bg.wasm', import.meta.url)));
@@ -30,11 +38,13 @@ export async function start({ pool = 32, wasm = undefined, files = null, onProgr
         let started = 0;
         spawner.onmessage = ({ data }) => {
             if (data?.horizon === 'started') onPool(++started / pool);
+            if (data?.horizon === 'thread-failed') onThreadFailed(data.error);
             if (data?.horizon === 'ready') resolve();
             if (data?.horizon === 'failed') reject(new Error(data.error));
         };
         const channel = `horizon-threads-${crypto.randomUUID()}`;
-        spawner.postMessage({ module, memory, stack: STACK, channel, pool });
+        const failure = horizon.horizon_web_failure_flag();
+        spawner.postMessage({ module, memory, stack: STACK, channel, pool, failure });
     });
     return { horizon, memory };
 }
