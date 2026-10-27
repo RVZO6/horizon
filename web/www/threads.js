@@ -10,8 +10,10 @@ const STACK = 8 * 1024 * 1024;
 // (web/bundle.py). `onProgress(done, total)` follows the bundles' bytes, `onPool(fraction)` the
 // thread workers' start.
 export async function start({ pool = 32, wasm = undefined, files = null, onProgress = () => {}, onPool = () => {} } = {}) {
-    const exports = await init(wasm === undefined ? undefined : { module_or_path: wasm });
-    const module = init.__wbindgen_wasm_module;
+    // Compiled once here, and the same module to every worker: a worker given none fetches and
+    // compiles the whole program again.
+    const module = await WebAssembly.compileStreaming(wasm ?? fetch(new URL('./horizon_bg.wasm', import.meta.url)));
+    const exports = await init({ module_or_path: module });
     const memory = exports.memory;
     horizon.horizon_web_main_thread();
     if (files !== null) {

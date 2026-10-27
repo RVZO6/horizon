@@ -13394,13 +13394,6 @@ impl ApplicationHandler for Game<'_> {
                 return;
             }
         }
-        // The rest of the resources load after the loading screen: the page's Mojang Studios
-        // screen stays until they are in (vanilla's reload is done).
-        #[cfg(target_arch = "wasm32")]
-        horizon_web::loading(
-            self.rest_loader.as_ref().map_or(1.0, |l| l.progress.fraction()),
-            self.rest_loader.is_none(),
-        );
         // The browser takes Escape to let the pointer go: the game sees the Escape it ate.
         #[cfg(target_arch = "wasm32")]
         if horizon_web::take_pointer_lost()
@@ -14994,9 +14987,10 @@ impl Loading {
                 Err(e) => log::warn!("Horizon: loading screen frame failed: {e}"),
             }
         }
-        // The page's Mojang Studios screen covers the game's until every resource is loaded.
+        // The page's Mojang Studios screen covers the game's until it has a screen to show; the
+        // rest of the resources load behind the title, as they do natively.
         #[cfg(target_arch = "wasm32")]
-        horizon_web::loading(self.progress.fraction(), false);
+        horizon_web::loading(self.progress.fraction(), self.gui.is_some());
         if !self.shown {
             self.shown = true;
             log::info!(

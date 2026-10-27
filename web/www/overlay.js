@@ -10,6 +10,7 @@ export class LoadingOverlay {
         document.body.append(this.canvas);
         const size = () => [Math.round(innerWidth * (devicePixelRatio || 1)), Math.round(innerHeight * (devicePixelRatio || 1))];
         const done = () => {
+            console.log(`horizon-web: Mojang Studios screen gone after ${Math.round(performance.now())} ms`);
             this.canvas.remove();
             this.worker?.terminate();
             // The game owns the window now: nothing red behind its canvas.

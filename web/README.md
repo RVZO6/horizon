@@ -34,8 +34,8 @@ cross-origin isolation headers web/serve.py sends.
   the browser, so `horizon_run` opens the device before the game starts and error scopes count as
   clean (`gfx::scope_error`).
 - **Loading.** `www/overlay.js` is vanilla's Mojang Studios screen (26.3's `LoadingOverlay`) over
-  the downloads, the thread workers' start and the game's loading, until every resource is in (as
-  vanilla waits for its reload), then its fade into the title screen. It draws on a worker
+  the downloads, the thread workers' start and the game's start, then its fade into the title
+  screen (the rest of the resources load behind it, as natively). It draws on a worker
   (OffscreenCanvas), so it keeps moving while the page's thread is busy. The game draws a frame as
   soon as it rebuilds its renderer: a reconfigured WebGPU canvas is empty until drawn.
 

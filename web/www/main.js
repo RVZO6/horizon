@@ -26,13 +26,13 @@ const ms = () => Math.round(performance.now() - t0);
 const overlay = new LoadingOverlay('fs/res/assets/minecraft/textures/gui/title/mojangstudios.png');
 
 // The downloads start with the page. The bar follows their bytes, the thread workers' start, then
-// the game's own loading, to the end of its resources.
+// the game's own start, and is full when the game has a screen to show.
 const sizes = fetch('sizes.json').then((r) => r.json());
 const received = { wasm: 0, bundle: 0, pool: 0, game: 0 };
 const advance = async () => {
     const { wasm, startup } = await sizes;
     const downloads = Math.min((received.wasm + received.bundle) / (wasm + startup), 1);
-    overlay.setProgress(0.6 * downloads + 0.1 * received.pool + 0.3 * received.game);
+    overlay.setProgress(0.8 * downloads + 0.1 * received.pool + 0.1 * received.game);
 };
 const counted = (response, onBytes) =>
     response.then((r) => {
@@ -58,9 +58,12 @@ const onProgress = (done) => {
     advance();
 };
 addEventListener('horizon-loading', ({ detail }) => {
-    received.game = detail.progress;
+    received.game = detail.ready ? 1 : detail.progress;
     advance();
-    if (detail.ready) overlay.finish();
+    if (detail.ready && !overlay.finished) {
+        console.log(`horizon-web: title screen ready after ${ms()} ms`);
+        overlay.finish();
+    }
 });
 
 const onPool = (fraction) => {

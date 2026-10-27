@@ -101,7 +101,8 @@ pub fn take_pointer_lost() -> bool {
 static LOADED: AtomicBool = AtomicBool::new(false);
 
 /// The game's loading, for the page's Mojang Studios screen (web/www/overlay.js): how far the
-/// resources are, and whether all are loaded (vanilla's reload is done). Nothing after that.
+/// resources are, and whether the game has a screen to show (the overlay's reload is done).
+/// Nothing after that.
 pub fn loading(progress: f32, ready: bool) {
     if LOADED.load(Ordering::Relaxed) {
         return;

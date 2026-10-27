@@ -52,7 +52,17 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             Handler.started = time.monotonic()
         packed = Path(self.translate_path(path) + ".br")
         if packed.is_file() and "br" in self.headers.get("Accept-Encoding", ""):
+            # Revalidated on each load (Cache-Control: no-cache): unchanged, the browser keeps its
+            # copy, and Chrome its compiled wasm code.
+            stat = packed.stat()
+            etag = f'"{stat.st_mtime_ns:x}-{stat.st_size:x}"'
+            if self.headers.get("If-None-Match") == etag:
+                self.send_response(304)
+                self.send_header("ETag", etag)
+                self.end_headers()
+                return
             self.send_response(200)
+            self.send_header("ETag", etag)
             self.send_header("Content-Type", self.guess_type(path))
             self.send_header("Content-Encoding", "br")
             self.send_header("Content-Length", str(packed.stat().st_size))
