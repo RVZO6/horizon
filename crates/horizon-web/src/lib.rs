@@ -74,7 +74,7 @@ extern "C" {
 }
 
 static WANTS_POINTER_LOCK: AtomicBool = AtomicBool::new(false);
-static POINTER_LOST: AtomicBool = AtomicBool::new(false);
+static POINTER_LOCKED: AtomicBool = AtomicBool::new(false);
 
 /// The game captures the mouse (or lets it go). A browser locks the pointer only on a click, so the
 /// page asks on the next one (web/www/main.js), as vanilla grabs the mouse on a click.
@@ -87,15 +87,20 @@ pub fn horizon_web_wants_pointer_lock() -> bool {
     WANTS_POINTER_LOCK.load(Ordering::Relaxed)
 }
 
-/// The browser let the pointer go (Escape, another tab).
-#[wasm_bindgen]
-pub fn horizon_web_pointer_lost() {
-    POINTER_LOST.store(true, Ordering::Relaxed);
+/// Whether the game captures the mouse (`want_pointer_lock`).
+pub fn wants_pointer_lock() -> bool {
+    WANTS_POINTER_LOCK.load(Ordering::Relaxed)
 }
 
-/// Whether the browser let the pointer go since the last call.
-pub fn take_pointer_lost() -> bool {
-    POINTER_LOST.swap(false, Ordering::Relaxed)
+/// The browser locked the game's pointer, or let it go (Escape, another tab).
+#[wasm_bindgen]
+pub fn horizon_web_pointer_lock_changed(locked: bool) {
+    POINTER_LOCKED.store(locked, Ordering::Relaxed);
+}
+
+/// Whether the browser holds the pointer for the game: only then is the mouse captured.
+pub fn pointer_locked() -> bool {
+    POINTER_LOCKED.load(Ordering::Relaxed)
 }
 
 static LOADED: AtomicBool = AtomicBool::new(false);

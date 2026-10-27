@@ -94,7 +94,8 @@ addEventListener(
     true,
 );
 document.addEventListener('pointerlockchange', () => {
-    if (!document.pointerLockElement) horizon.horizon_web_pointer_lost();
+    const canvas = document.querySelector('canvas:not(.horizon-overlay)');
+    horizon.horizon_web_pointer_lock_changed(!!canvas && document.pointerLockElement === canvas);
 });
 // Structure templates: until they arrive, the game fetches the ones it needs one by one.
 loadBundle(horizon, memory, await fetch('fs/later.bundle')).then(

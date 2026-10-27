@@ -5606,6 +5606,12 @@ impl Game<'_> {
                 .set_cursor_grab(CursorGrabMode::Locked)
                 .or_else(|_| window.set_cursor_grab(CursorGrabMode::Confined))
                 .is_ok();
+            // The browser locks the pointer later, and only after a click: captured once it
+            // has (`follow_pointer_lock`).
+            #[cfg(target_arch = "wasm32")]
+            {
+                self.captured = horizon_web::pointer_locked();
+            }
             #[cfg(not(target_os = "macos"))]
             if self.captured && self.focused {
                 warp(window);
@@ -5632,6 +5638,29 @@ impl Game<'_> {
             self.captured = false;
         }
         window.set_cursor_visible(!self.captured);
+    }
+    /// The browser's pointer lock decides whether the mouse is captured: it locks the pointer on
+    /// a click the game asked one for (web/www/main.js), and lets it go on Escape, which the
+    /// game then never sees: that is Escape's pause menu.
+    #[cfg(target_arch = "wasm32")]
+    fn follow_pointer_lock(&mut self) -> Result<()> {
+        let locked = horizon_web::pointer_locked();
+        if locked && !self.captured && horizon_web::wants_pointer_lock() {
+            self.captured = true;
+            self.mouse.set_ignore_first_move();
+            if let Some(window) = &self.window {
+                window.set_cursor_visible(false);
+            }
+        } else if !locked && self.captured {
+            self.captured = false;
+            if let Some(window) = &self.window {
+                window.set_cursor_visible(true);
+            }
+            if self.screen == Screen::Playing {
+                self.key_pressed(KeyCode::Escape)?;
+            }
+        }
+        Ok(())
     }
     /// `GuiGraphicsExtractor.applyCursor` -> `Window.selectCursor` at the end
     /// of a frame: the cursor the frame's widgets asked for, set on the window
@@ -13410,13 +13439,8 @@ impl ApplicationHandler for Game<'_> {
                 return;
             }
         }
-        // The browser takes Escape to let the pointer go: the game sees the Escape it ate.
         #[cfg(target_arch = "wasm32")]
-        if horizon_web::take_pointer_lost()
-            && self.captured
-            && self.screen == Screen::Playing
-            && let Err(error) = self.key_pressed(KeyCode::Escape)
-        {
+        if let Err(error) = self.follow_pointer_lock() {
             self.error = Some(error);
         }
         if self.pending_save.is_some() {
