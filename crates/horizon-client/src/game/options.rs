@@ -351,6 +351,10 @@ impl Game<'_> {
     /// display's, a frame asked for before its slot is skipped instead of waited for.
     #[cfg(target_arch = "wasm32")]
     pub(super) fn frame_due(&mut self) -> bool {
+        // A resize's frame is drawn at once, outside the slots.
+        if std::mem::take(&mut self.draw_now) {
+            return true;
+        }
         let limit = self.framerate_limit();
         let now = horizon_client::window::LimiterClock::nanos(&mut self.frame_clock);
         self.asked_frames.frame_due(now, limit)

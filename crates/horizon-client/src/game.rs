@@ -1581,6 +1581,9 @@ struct Game<'a> {
     /// The browser's frame pacing (`frame_due`).
     #[cfg(target_arch = "wasm32")]
     asked_frames: horizon_client::window::AskedFrames,
+    /// The next frame asked for is drawn whatever the frame rate cap (`frame_due`).
+    #[cfg(target_arch = "wasm32")]
+    draw_now: bool,
     frame_clock: horizon_client::window::SystemClock,
     /// Hud.scopeScale (spyglass overlay size).
     scope_scale: f32,
@@ -13723,6 +13726,8 @@ impl<'a> Game<'a> {
             limiter: horizon_client::window::FramerateLimiter::new(0),
             #[cfg(target_arch = "wasm32")]
             asked_frames: Default::default(),
+            #[cfg(target_arch = "wasm32")]
+            draw_now: false,
             frame_clock: Default::default(),
             scope_scale: 0.5,
             frame_ticks: 0.0,
@@ -15155,7 +15160,18 @@ impl ApplicationHandler for App {
     fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
         match self {
             App::Loading(loading) => loading.window_event(event_loop, id, event),
-            App::Ready(game) => game.window_event(event_loop, id, event),
+            App::Ready(game) => {
+                #[cfg(target_arch = "wasm32")]
+                let resized = matches!(event, WindowEvent::Resized(_));
+                game.window_event(event_loop, id, event);
+                // The resize reconfigured the WebGPU canvas, which shows nothing until drawn:
+                // draw before the browser shows it, not at its next animation frame.
+                #[cfg(target_arch = "wasm32")]
+                if resized {
+                    game.draw_now = true;
+                    game.window_event(event_loop, id, WindowEvent::RedrawRequested);
+                }
+            }
         }
     }
     fn device_event(&mut self, event_loop: &ActiveEventLoop, id: DeviceId, event: DeviceEvent) {

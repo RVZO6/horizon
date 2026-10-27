@@ -457,6 +457,9 @@ impl Loading {
                     r.resize(size.width, size.height);
                 }
                 self.apply_menu_settings();
+                // A reconfigured WebGPU canvas shows nothing until it is drawn.
+                #[cfg(target_arch = "wasm32")]
+                self.draw();
             }
             WindowEvent::RedrawRequested => self.draw(),
             WindowEvent::ModifiersChanged(modifiers) => self.menu.modifiers = modifiers.state(),
