@@ -12,7 +12,9 @@ use std::ptr;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 /// Block sizes, each a multiple of 16 (the largest alignment cached).
-const SIZES: [usize; 14] = [16, 32, 48, 64, 96, 128, 192, 256, 384, 512, 768, 1024, 1536, 2048];
+const SIZES: [usize; 14] = [
+    16, 32, 48, 64, 96, 128, 192, 256, 384, 512, 768, 1024, 1536, 2048,
+];
 const LARGEST: usize = 2048;
 const ALIGN: usize = 16;
 /// Blocks a refill brings, and the most a list keeps before it gives half back.
@@ -40,7 +42,14 @@ unsafe impl Sync for Shard {}
 static CACHES: [Shard; SHARDS] = [const {
     Shard {
         locked: AtomicBool::new(false),
-        lists: UnsafeCell::new([const { List { head: ptr::null_mut(), len: 0 } }; SIZES.len()]),
+        lists: UnsafeCell::new(
+            [const {
+                List {
+                    head: ptr::null_mut(),
+                    len: 0,
+                }
+            }; SIZES.len()],
+        ),
     }
 }; SHARDS];
 
@@ -57,10 +66,12 @@ fn lock() -> Option<Held> {
     let marker = 0u8;
     let stack = std::hint::black_box(&marker) as *const u8 as usize;
     let first = (stack >> STACK_BITS) % SHARDS;
-    (0..SHARDS).map(|i| &CACHES[(first + i) % SHARDS]).find_map(|shard| {
-        // `then`, not `then_some`: a guard for a shard someone else holds would unlock it on drop.
-        (!shard.locked.swap(true, Ordering::Acquire)).then(|| Held(shard))
-    })
+    (0..SHARDS)
+        .map(|i| &CACHES[(first + i) % SHARDS])
+        .find_map(|shard| {
+            // `then`, not `then_some`: a guard for a shard someone else holds would unlock it on drop.
+            (!shard.locked.swap(true, Ordering::Acquire)).then(|| Held(shard))
+        })
 }
 
 fn class(layout: Layout) -> Option<usize> {

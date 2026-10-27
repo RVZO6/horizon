@@ -1817,6 +1817,8 @@ struct Game<'a> {
     lan: Option<lan::LanHost>,
     /// Single player's server thread, which `remote` is connected to.
     integrated: Option<integrated::Integrated>,
+    /// Single player's server thread while it opens the world, before the window joins it.
+    integrated_start: Option<integrated::Starting>,
     /// This game is that server thread's (game/integrated.rs).
     serving: Option<integrated::Serving>,
     /// The open world is shared behind an invite code (game/friends.rs).
@@ -11357,6 +11359,18 @@ impl Game<'_> {
         Ok(())
     }
     fn render(&mut self) -> Result<bool> {
+        // The server thread opens the world: the screen the window shows once it joins.
+        if self.integrated_start.is_some()
+            && let Some(renderer) = &mut self.renderer
+        {
+            let mut hud = HudBatch::new([renderer.config.width, renderer.config.height]);
+            let status = horizon_client::lang::get_or(
+                "multiplayer.downloadingTerrain",
+                "Loading terrain...",
+            );
+            remote::connection_screen(&mut hud, &self.gui.atlas, &status, "local");
+            return renderer.render(&loading_frame(&hud));
+        }
         if let Some(loader) = &self.world_loader {
             if let Some(renderer) = &mut self.renderer {
                 let mut hud = HudBatch::new([renderer.config.width, renderer.config.height]);
@@ -12531,7 +12545,9 @@ impl ApplicationHandler for Game<'_> {
             self.perf.cancel_world_opening();
             return;
         }
-        if (self.pending_entry.is_some() || self.world_loader.is_some())
+        if (self.pending_entry.is_some()
+            || self.world_loader.is_some()
+            || self.integrated_start.is_some())
             && !matches!(
                 &event,
                 WindowEvent::CloseRequested
@@ -13411,9 +13427,8 @@ impl ApplicationHandler for Game<'_> {
                         window.request_redraw();
                     }
                     // Yield between polls even when disk I/O is slow.
-                    event_loop.set_control_flow(ControlFlow::wait_duration(
-                        Duration::from_millis(4),
-                    ));
+                    event_loop
+                        .set_control_flow(ControlFlow::wait_duration(Duration::from_millis(4)));
                 }
                 Err(error) => {
                     self.error = Some(error);
@@ -13813,6 +13828,7 @@ impl<'a> Game<'a> {
             remote: None,
             lan: None,
             integrated: None,
+            integrated_start: None,
             serving: None,
             world_options: None,
             options_to_world_options: false,
@@ -14002,6 +14018,7 @@ impl Game<'_> {
     }
 
     fn resume_world_entry(&mut self) -> Result<()> {
+        self.poll_integrated_start()?;
         self.poll_world_rest()?;
         if let Some(loader) = &self.world_loader {
             if !loader.ready() {

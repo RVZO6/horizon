@@ -14,7 +14,7 @@ use horizon_client::{
     chunk::Chunk,
     containers::{BlockEntity, Furnace, FurnaceKind},
     entities::{Experience, ExperienceOrb, ItemEntity},
-    hud::{HudBatch, rgba},
+    hud::{HudAtlas, HudBatch, rgba},
     items::ItemStack,
     menu::Input,
     mobs::{Mob, MobType, Who},
@@ -444,6 +444,12 @@ impl Game<'_> {
         self.apply_settings();
         self.clear_waypoints();
         self.boss_overlay.reset();
+        // Single player has no ConnectScreen: its world loads behind "Loading terrain...".
+        let status = if session.address == "local" {
+            horizon_client::lang::get_or("multiplayer.downloadingTerrain", "Loading terrain...")
+        } else {
+            "Connecting to the server...".into()
+        };
         self.remote = Some(Remote {
             session,
             brand: "unknown".into(),
@@ -452,7 +458,7 @@ impl Game<'_> {
             lang,
             registries: Arc::new(Dynamic::default()),
             joined: false,
-            status: "Connecting to the server...".into(),
+            status,
             entity_id: 0,
             use_item: None,
             dimension: DimensionType::vanilla("minecraft:overworld"),
@@ -5849,29 +5855,12 @@ impl Game<'_> {
         if self.player.is_some() {
             return false;
         }
-        let atlas = &self.gui.atlas;
-        let (w, h) = (batch.width, batch.height);
-        batch.fill(atlas, 0.0, 0.0, w, h, rgba(20, 20, 20, 255));
-        let shown = horizon_client::net::shown_address(&r.session.address);
-        for (i, line) in [r.status.as_str(), shown.as_str()].iter().enumerate() {
-            let tw = HudBatch::text_width(atlas, line);
-            batch.text(
-                atlas,
-                line,
-                (w - tw) / 2.0,
-                h / 2.0 - 12.0 + i as f32 * 12.0,
-                if i == 0 {
-                    u32::MAX
-                } else {
-                    rgba(160, 160, 160, 255)
-                },
-                true,
-            );
-        }
         let _ = r.joined;
+        connection_screen(batch, &self.gui.atlas, &r.status, &r.session.address);
         true
     }
     /// The server's death message; chat uses the shared ChatComponent.
+
     pub(super) fn remote_hud(&self, batch: &mut HudBatch) {
         let Some(r) = &self.remote else { return };
         let atlas = &self.gui.atlas;
@@ -6458,5 +6447,32 @@ mod tests {
         assert_eq!(Game::menu_slot_index("minecraft:generic_9x6", 354), None);
         assert_eq!(Game::menu_slot_index("minecraft:generic_9x6", 504), None);
         assert_eq!(Game::menu_slot_index("unknown", 0), None);
+    }
+}
+
+/// The connecting screen: its status over the server's address.
+pub(super) fn connection_screen(
+    batch: &mut HudBatch,
+    atlas: &HudAtlas,
+    status: &str,
+    address: &str,
+) {
+    let (w, h) = (batch.width, batch.height);
+    batch.fill(atlas, 0.0, 0.0, w, h, rgba(20, 20, 20, 255));
+    let shown = horizon_client::net::shown_address(address);
+    for (i, line) in [status, shown.as_str()].iter().enumerate() {
+        let tw = HudBatch::text_width(atlas, line);
+        batch.text(
+            atlas,
+            line,
+            (w - tw) / 2.0,
+            h / 2.0 - 12.0 + i as f32 * 12.0,
+            if i == 0 {
+                u32::MAX
+            } else {
+                rgba(160, 160, 160, 255)
+            },
+            true,
+        );
     }
 }

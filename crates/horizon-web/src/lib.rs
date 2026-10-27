@@ -169,7 +169,10 @@ static QUEUED: Condvar = Condvar::new();
 
 #[unsafe(no_mangle)]
 pub extern "C" fn __horizon_web_spawn(packet: *mut u8) -> i32 {
-    QUEUE.lock().unwrap_or_else(|e| e.into_inner()).push_back(packet as usize);
+    QUEUE
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .push_back(packet as usize);
     QUEUED.notify_one();
     0
 }

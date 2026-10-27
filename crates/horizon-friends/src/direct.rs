@@ -97,7 +97,11 @@ pub fn listen(_port: u16) -> io::Result<(Vec<TcpListener>, u16)> {
     Err(io::ErrorKind::Unsupported.into())
 }
 #[cfg(target_arch = "wasm32")]
-pub fn connect_from(_port: Option<u16>, to: SocketAddr, timeout: Duration) -> io::Result<TcpStream> {
+pub fn connect_from(
+    _port: Option<u16>,
+    to: SocketAddr,
+    timeout: Duration,
+) -> io::Result<TcpStream> {
     TcpStream::connect_timeout(&to, timeout)
 }
 

@@ -13,8 +13,14 @@ mod probe {
     pub fn web_probe() -> Result<String, JsError> {
         let mut report = Vec::new();
         let started = Instant::now();
-        report.push(format!("now: {:?}", SystemTime::now().duration_since(SystemTime::UNIX_EPOCH)?));
-        report.push(format!("parallelism: {:?}", std::thread::available_parallelism()?));
+        report.push(format!(
+            "now: {:?}",
+            SystemTime::now().duration_since(SystemTime::UNIX_EPOCH)?
+        ));
+        report.push(format!(
+            "parallelism: {:?}",
+            std::thread::available_parallelism()?
+        ));
         let (tx, rx) = mpsc::channel();
         let handles: Vec<_> = (0..4)
             .map(|i| {
@@ -23,7 +29,8 @@ mod probe {
                     .name(format!("probe-{i}"))
                     .spawn(move || {
                         std::thread::sleep(Duration::from_millis(50));
-                        tx.send((i, std::thread::current().name().map(str::to_owned))).unwrap();
+                        tx.send((i, std::thread::current().name().map(str::to_owned)))
+                            .unwrap();
                         i * 10
                     })
                     .unwrap()
@@ -50,14 +57,30 @@ mod probe {
                 *counter.lock().unwrap() += 1;
             }
         });
-        report.push(format!("contended counter: {} (want 100000)", counter.lock().unwrap()));
+        report.push(format!(
+            "contended counter: {} (want 100000)",
+            counter.lock().unwrap()
+        ));
         std::fs::create_dir_all("probe/dir")?;
         std::fs::write("probe/dir/a.txt", b"hello")?;
         std::fs::rename("probe/dir", "probe/moved")?;
-        report.push(format!("fs: {:?} cwd {:?}", std::fs::read_to_string("probe/moved/a.txt")?, std::env::current_dir()?));
+        report.push(format!(
+            "fs: {:?} cwd {:?}",
+            std::fs::read_to_string("probe/moved/a.txt")?,
+            std::env::current_dir()?
+        ));
         let lazy = std::fs::read("/res/horizon-resources.json");
-        report.push(format!("lazy: {:?}", lazy.map(|b| String::from_utf8_lossy(&b).chars().take(60).collect::<String>())));
-        let names: Vec<_> = std::fs::read_dir("/res")?.take(5).map(|e| e.map(|e| e.file_name())).collect();
+        report.push(format!(
+            "lazy: {:?}",
+            lazy.map(|b| String::from_utf8_lossy(&b)
+                .chars()
+                .take(60)
+                .collect::<String>())
+        ));
+        let names: Vec<_> = std::fs::read_dir("/res")?
+            .take(5)
+            .map(|e| e.map(|e| e.file_name()))
+            .collect();
         report.push(format!("read_dir /res: {names:?}"));
         report.push(format!("elapsed: {:?}", started.elapsed()));
         eprintln!("probe stderr line");
