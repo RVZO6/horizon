@@ -57,3 +57,8 @@ mkdir -p "$dist"
 wasm-bindgen --target web --out-dir "$dist" --out-name horizon "$wasm"
 cp "$here"/www/* "$dist/"
 echo "Built $dist ($(du -h "$dist/horizon_bg.wasm" | cut -f1) wasm)"
+
+# 4. The resource bundles, when resources are prepared (docs/native-client.md).
+if [[ $what == game && -d $root/.local/horizon-client/26.3 ]]; then
+    python3 "$here/bundle.py" --resources "$root/.local/horizon-client/26.3" --out "$dist/fs"
+fi

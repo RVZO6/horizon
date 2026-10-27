@@ -9,6 +9,11 @@
 //! a replacement for every worker taken.
 #![cfg(target_arch = "wasm32")]
 
+mod alloc;
+
+#[global_allocator]
+static ALLOCATOR: alloc::Allocator = alloc::Allocator;
+
 use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::sync::{Condvar, Mutex};
@@ -67,6 +72,7 @@ unsafe extern "C" {
     fn __horizon_std_thread_main(packet: *mut u8);
     fn __horizon_std_push_arg(ptr: *const u8, len: usize);
     fn __horizon_std_memfs_lazy(ptr: *const u8, len: usize, size: u64);
+    fn __horizon_std_memfs_insert(ptr: *const u8, len: usize, data: *mut u8);
 }
 
 #[unsafe(no_mangle)]
@@ -158,6 +164,22 @@ pub fn horizon_web_files(manifest: &str) {
         };
         unsafe { __horizon_std_memfs_lazy(path.as_ptr(), path.len(), size) };
     }
+}
+
+/// Room for one file of a bundle (web/bundle.py): the page copies the bytes there as they arrive,
+/// then hands them to the file system with `horizon_web_file_commit`.
+#[wasm_bindgen]
+pub fn horizon_web_file_alloc(size: usize) -> *mut u8 {
+    let mut data = std::mem::ManuallyDrop::new(vec![0u8; size]);
+    data.as_mut_ptr()
+}
+
+/// Adds the file `horizon_web_file_alloc` made room for.
+#[wasm_bindgen]
+pub fn horizon_web_file_commit(path: &str, data: *mut u8, size: usize) {
+    // The Vec `horizon_web_file_alloc` leaked: `vec![0; size]` has exactly `size` capacity.
+    let mut data = unsafe { Vec::from_raw_parts(data, size, size) };
+    unsafe { __horizon_std_memfs_insert(path.as_ptr(), path.len(), (&raw mut data).cast()) };
 }
 
 /// Appends a command line argument for the game's `std::env::args`.

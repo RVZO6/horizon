@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Serves web/dist for development, with the headers shared memory needs.
 
-`fs/res/...` maps to the prepared resources (default `.local/horizon-client/26.3`) and
-`fs/index.txt` lists them (`size<TAB>/res/path` per line) for the game's file system.
+`fs/res/...` maps to the prepared resources (default `.local/horizon-client/26.3`): the files the
+game fetches on demand. A bundle (web/bundle.py) goes brotli-compressed to a browser that takes it.
 
     python3 web/serve.py [--host 127.0.0.1] [--port 8026] [--resources PATH] [--access-log PATH]
 
@@ -21,20 +21,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 
 
-def manifest(resources: Path) -> bytes:
-    lines = []
-    for directory, _, files in os.walk(resources):
-        for name in files:
-            path = Path(directory, name)
-            relative = path.relative_to(resources).as_posix()
-            lines.append(f"{path.stat().st_size}\t/res/{relative}")
-    lines.sort(key=lambda line: line.split("\t", 1)[1])
-    return ("\n".join(lines) + "\n").encode()
-
-
 class Handler(http.server.SimpleHTTPRequestHandler):
     resources: Path
-    index: bytes
     access_log = None
     access_lock = threading.Lock()
     started = time.monotonic()
@@ -57,17 +45,21 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         return super().translate_path(path)
 
     def do_GET(self):
-        if self.path.split("?", 1)[0] == "/fs/index.txt":
-            self.send_response(200)
-            self.send_header("Content-Type", "text/plain; charset=utf-8")
-            self.send_header("Content-Length", str(len(self.index)))
-            self.end_headers()
-            self.wfile.write(self.index)
+        path = self.path.split("?", 1)[0]
+        if path == "/fs/index.txt":
             # A new page load: times restart.
             Handler.started = time.monotonic()
+        packed = Path(self.translate_path(path) + ".br")
+        if path.endswith(".bundle") and packed.is_file() and "br" in self.headers.get("Accept-Encoding", ""):
+            self.send_response(200)
+            self.send_header("Content-Type", "application/octet-stream")
+            self.send_header("Content-Encoding", "br")
+            self.send_header("Content-Length", str(packed.stat().st_size))
+            self.end_headers()
+            with packed.open("rb") as f:
+                self.copyfile(f, self.wfile)
             return
         super().do_GET()
-        path = self.path.split("?", 1)[0]
         if self.access_log is not None and path.startswith("/fs/res/"):
             local = Path(self.translate_path(path))
             size = local.stat().st_size if local.is_file() else -1
@@ -93,10 +85,9 @@ def main():
     if args.access_log:
         Handler.access_log = args.access_log.open("a")
     Handler.resources = args.resources.resolve()
-    Handler.index = manifest(Handler.resources)
     handler = functools.partial(Handler, directory=str(ROOT / "web/dist"))
     server = http.server.ThreadingHTTPServer((args.host, args.port), handler)
-    print(f"Serving web/dist on http://{args.host}:{args.port}/ ({len(Handler.index.splitlines())} resource files)")
+    print(f"Serving web/dist on http://{args.host}:{args.port}/", flush=True)
     server.serve_forever()
 
 

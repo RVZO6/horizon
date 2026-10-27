@@ -40,6 +40,10 @@ static BIDIRECTIONAL: AtomicBool = AtomicBool::new(false);
 /// A source of resource files: the prepared root plus packs, highest priority last.
 pub trait ResourceSource {
     fn read(&self, path: &str) -> Option<Vec<u8>>;
+    /// Whether `path` exists, without reading it.
+    fn exists(&self, path: &str) -> bool {
+        self.read(path).is_some()
+    }
     /// The namespaces under `assets/` (resource packs may add their own).
     fn namespaces(&self) -> Vec<String> {
         vec!["minecraft".into()]
@@ -67,6 +71,9 @@ impl ResourceSource for Bundled {
 impl ResourceSource for std::path::PathBuf {
     fn read(&self, path: &str) -> Option<Vec<u8>> {
         std::fs::read(self.join(path)).ok()
+    }
+    fn exists(&self, path: &str) -> bool {
+        self.join(path).is_file()
     }
     fn namespaces(&self) -> Vec<String> {
         std::fs::read_dir(self.join("assets"))
@@ -190,7 +197,7 @@ pub fn available(sources: &[&dyn ResourceSource]) -> Vec<LanguageInfo> {
             for (code, info) in value["language"].as_object().into_iter().flatten() {
                 // Only languages whose file exists somewhere are selectable.
                 let file = format!("assets/minecraft/lang/{code}.json");
-                if code != DEFAULT && !sources.iter().any(|s| s.read(&file).is_some()) {
+                if code != DEFAULT && !sources.iter().any(|s| s.exists(&file)) {
                     continue;
                 }
                 found.insert(
