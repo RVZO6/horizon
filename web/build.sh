@@ -61,6 +61,9 @@ brotli -q 9 -f "$dist/horizon_bg.wasm"
 echo "Built $dist ($(du -h "$dist/horizon_bg.wasm" | cut -f1) wasm, $(du -h "$dist/horizon_bg.wasm.br" | cut -f1) brotli)"
 
 # 4. The resource bundles, when resources are prepared (docs/native-client.md).
+if [[ $what == probe && -d $root/.local/horizon-client/26.3 ]]; then
+    python3 "$here/bundle.py" --resources "$root/.local/horizon-client/26.3" --out "$dist/fs" --index-only
+fi
 if [[ $what == game && -d $root/.local/horizon-client/26.3 ]]; then
     python3 "$here/bundle.py" --resources "$root/.local/horizon-client/26.3" --out "$dist/fs"
     # The loading bar's totals: the bytes the page receives once decompressed.

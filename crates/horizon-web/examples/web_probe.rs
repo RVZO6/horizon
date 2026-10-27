@@ -9,6 +9,50 @@ mod probe {
     use std::time::{Duration, Instant, SystemTime};
     use wasm_bindgen::prelude::*;
 
+    /// `File` as std's unix backend behaves: each check's name, or "ok".
+    fn file_semantics() -> Result<String, std::io::Error> {
+        use std::fs::{File, OpenOptions};
+        use std::io::{ErrorKind, Read, Seek, SeekFrom, Write};
+        std::fs::write("semantics.txt", b"0123456789")?;
+        let mut failed = Vec::new();
+        // A duplicate shares the cursor.
+        let mut a = File::open("semantics.txt")?;
+        let mut b = a.try_clone()?;
+        let mut two = [0u8; 2];
+        a.read_exact(&mut two)?;
+        b.read_exact(&mut two)?;
+        if &two != b"23" {
+            failed.push("duplicate cursor");
+        }
+        // A read past the end reads nothing and keeps the cursor.
+        a.seek(SeekFrom::Start(20))?;
+        if a.read(&mut two)? != 0 || a.stream_position()? != 20 {
+            failed.push("read past the end");
+        }
+        // set_len needs write access.
+        if File::open("semantics.txt")?.set_len(2).is_ok() {
+            failed.push("set_len read-only");
+        }
+        // The open options std's unix backend refuses.
+        let refused = |o: &mut OpenOptions| {
+            o.open("semantics.txt").err().map(|e| e.kind()) == Some(ErrorKind::InvalidInput)
+        };
+        if !refused(OpenOptions::new().create(true)) {
+            failed.push("create without write");
+        }
+        if !refused(OpenOptions::new().append(true).truncate(true)) {
+            failed.push("append with truncate");
+        }
+        // Writes past the end fill with zeros; the length follows.
+        let mut w = OpenOptions::new().write(true).open("semantics.txt")?;
+        w.seek(SeekFrom::Start(12))?;
+        w.write_all(b"x")?;
+        if std::fs::metadata("semantics.txt")?.len() != 13 || std::fs::read("semantics.txt")?[10..] != *b"\0\0x" {
+            failed.push("write past the end");
+        }
+        Ok(if failed.is_empty() { "ok".into() } else { failed.join(", ") })
+    }
+
     #[wasm_bindgen]
     pub fn web_probe() -> Result<String, JsError> {
         let mut report = Vec::new();
@@ -82,6 +126,7 @@ mod probe {
             .map(|e| e.map(|e| e.file_name()))
             .collect();
         report.push(format!("read_dir /res: {names:?}"));
+        report.push(format!("file semantics: {:?}", file_semantics()));
         report.push(format!("elapsed: {:?}", started.elapsed()));
         eprintln!("probe stderr line");
         Ok(report.join("\n"))

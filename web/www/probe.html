@@ -10,7 +10,7 @@
 import { start } from './threads.js';
 const out = document.getElementById('out');
 try {
-    const horizon = await start({ pool: 8, files: true });
+    const { horizon } = await start({ pool: 8, files: { index: fetch('fs/index.txt') } });
     horizon.horizon_web_chdir('/home/web/probe-home');
     out.textContent = horizon.web_probe();
 } catch (e) {

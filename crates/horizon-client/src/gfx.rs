@@ -368,6 +368,8 @@ pub struct Renderer {
     /// (see `startup_step`).
     first_frame: FirstFrame,
     gpu_timer: Option<timing::GpuTimer>,
+    /// Whether frames are timed (`set_gpu_timing`).
+    gpu_timing: bool,
     /// GPU frame times (ms) read back since the caller last drained them.
     pub gpu_times: Vec<f32>,
     /// The last lightmap written, RGBA rows of sky level by block level
@@ -2568,6 +2570,7 @@ impl Renderer {
                 FirstFrame::Drawn
             },
             gpu_timer,
+            gpu_timing: true,
             gpu_times: Vec::new(),
             lightmap_pixels: [0; 16 * 16 * 4],
             last_wait: std::time::Duration::ZERO,
@@ -2754,6 +2757,16 @@ impl Renderer {
             usage: config.usage,
             view_formats: &config.view_formats,
         })
+    }
+    /// Time the GPU's frames, or stop (the timer's queries and readback cost every frame). The
+    /// browser times them only while the performance overlay shows them.
+    pub fn set_gpu_timing(&mut self, on: bool) {
+        if on != self.gpu_timing {
+            self.gpu_timing = on;
+            self.gpu_timer = on
+                .then(|| timing::GpuTimer::new(&self.device, &self.queue))
+                .flatten();
+        }
     }
     /// Hand the window surface over to the renderer that replaces this one on
     /// the same device (it takes `spare_surface`).

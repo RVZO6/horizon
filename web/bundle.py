@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Packs the prepared resources for the browser build into web/dist/fs.
 
-    python3 web/bundle.py [--resources .local/horizon-client/26.3] [--out web/dist/fs]
+    python3 web/bundle.py [--resources .local/horizon-client/26.3] [--out web/dist/fs] [--index-only]
 
 - `startup.bundle`: the files the game reads before the title screen and its first world. The page
   streams it into the game's file system before the game starts.
@@ -60,6 +60,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--resources", type=Path, default=ROOT / ".local/horizon-client/26.3")
     parser.add_argument("--out", type=Path, default=ROOT / "web/dist/fs")
+    parser.add_argument("--index-only", action="store_true", help="only index.txt (web/www/probe.html)")
     args = parser.parse_args()
     resources = args.resources.resolve()
     args.out.mkdir(parents=True, exist_ok=True)
@@ -71,6 +72,8 @@ def main():
     (args.out / "index.txt").write_text(
         "".join(f"{(resources / f).stat().st_size}\t/res/{f}\n" for f in every)
     )
+    if args.index_only:
+        return
     for name in ("startup", "later"):
         files = [f for f in every if kind(f) == name]
         size = write_bundle(resources, files, args.out / f"{name}.bundle")

@@ -1,6 +1,6 @@
 diff -ruN library.orig/std/src/sys/args/mod.rs library/std/src/sys/args/mod.rs
---- library.orig/std/src/sys/args/mod.rs	2026-10-27 14:01:34
-+++ library/std/src/sys/args/mod.rs	2026-10-27 14:01:37
+--- library.orig/std/src/sys/args/mod.rs	2026-10-27 16:38:28
++++ library/std/src/sys/args/mod.rs	2026-10-27 16:38:31
 @@ -64,6 +64,10 @@
          mod zkvm;
          pub use zkvm::*;
@@ -14,7 +14,7 @@ diff -ruN library.orig/std/src/sys/args/mod.rs library/std/src/sys/args/mod.rs
          pub use unsupported::*;
 diff -ruN library.orig/std/src/sys/args/web.rs library/std/src/sys/args/web.rs
 --- library.orig/std/src/sys/args/web.rs	1969-12-31 19:00:00
-+++ library/std/src/sys/args/web.rs	2026-10-27 14:01:37
++++ library/std/src/sys/args/web.rs	2026-10-27 16:38:31
 @@ -0,0 +1,44 @@
 +//! The arguments the program pushed with `__horizon_std_push_arg`.
 +use crate::ffi::OsString;
@@ -61,8 +61,8 @@ diff -ruN library.orig/std/src/sys/args/web.rs library/std/src/sys/args/web.rs
 +    }
 +}
 diff -ruN library.orig/std/src/sys/env/mod.rs library/std/src/sys/env/mod.rs
---- library.orig/std/src/sys/env/mod.rs	2026-10-27 14:01:34
-+++ library/std/src/sys/env/mod.rs	2026-10-27 14:01:37
+--- library.orig/std/src/sys/env/mod.rs	2026-10-27 16:38:28
++++ library/std/src/sys/env/mod.rs	2026-10-27 16:38:31
 @@ -11,6 +11,7 @@
      target_os = "uefi",
      target_os = "wasi",
@@ -84,7 +84,7 @@ diff -ruN library.orig/std/src/sys/env/mod.rs library/std/src/sys/env/mod.rs
          mod unsupported;
 diff -ruN library.orig/std/src/sys/env/web.rs library/std/src/sys/env/web.rs
 --- library.orig/std/src/sys/env/web.rs	1969-12-31 19:00:00
-+++ library/std/src/sys/env/web.rs	2026-10-27 14:01:37
++++ library/std/src/sys/env/web.rs	2026-10-27 16:38:31
 @@ -0,0 +1,23 @@
 +//! An environment kept in memory (`sys::web::ENV`), set by the program.
 +pub use super::common::Env;
@@ -111,8 +111,8 @@ diff -ruN library.orig/std/src/sys/env/web.rs library/std/src/sys/env/web.rs
 +}
 diff -ruN library.orig/std/src/sys/fs/memfs.rs library/std/src/sys/fs/memfs.rs
 --- library.orig/std/src/sys/fs/memfs.rs	1969-12-31 19:00:00
-+++ library/std/src/sys/fs/memfs.rs	2026-10-27 14:01:37
-@@ -0,0 +1,756 @@
++++ library/std/src/sys/fs/memfs.rs	2026-10-27 17:02:18
+@@ -0,0 +1,795 @@
 +//! An in-memory file system for the browser build. Paths are made absolute against the working
 +//! directory (`sys::paths::getcwd`); a file registered with `__horizon_std_memfs_lazy` is fetched
 +//! (`sys::web::fetch`) the first time it is read.
@@ -131,36 +131,54 @@ diff -ruN library.orig/std/src/sys/fs/memfs.rs library/std/src/sys/fs/memfs.rs
 +struct FileNode {
 +    /// `None` until a lazy file is fetched.
 +    data: RwLock<Option<Vec<u8>>>,
-+    /// Where a lazy file is fetched from, and its size before then.
-+    lazy: Option<(PathBuf, u64)>,
++    /// The file's length, readable while `data` is held (a fetch, a write).
++    len: AtomicU64,
++    /// Where a lazy file is fetched from.
++    lazy: Option<PathBuf>,
++    /// Held while the file is fetched: one fetch at a time, and none under `data`'s lock or the
++    /// tree's, so the file's metadata and every other file stay at hand meanwhile.
++    fetching: Mutex<()>,
 +    modified: Mutex<SystemTime>,
 +}
 +
 +impl FileNode {
 +    fn new(data: Option<Vec<u8>>, lazy: Option<(PathBuf, u64)>) -> Arc<FileNode> {
-+        Arc::new(FileNode { data: RwLock::new(data), lazy, modified: Mutex::new(SystemTime::now()) })
++        let len = data.as_ref().map_or(lazy.as_ref().map_or(0, |(_, size)| *size), |d| d.len() as u64);
++        Arc::new(FileNode {
++            data: RwLock::new(data),
++            len: AtomicU64::new(len),
++            lazy: lazy.map(|(path, _)| path),
++            fetching: Mutex::new(()),
++            modified: Mutex::new(SystemTime::now()),
++        })
++    }
++
++    fn loaded(&self) -> bool {
++        self.data.read().unwrap_or_else(|e| e.into_inner()).is_some()
 +    }
 +
 +    fn load(&self) -> io::Result<()> {
-+        if self.data.read().unwrap_or_else(|e| e.into_inner()).is_some() {
++        if self.loaded() {
 +            return Ok(());
 +        }
++        let _fetching = web::lock(&self.fetching);
++        if self.loaded() {
++            return Ok(());
++        }
++        let path = self.lazy.as_ref().ok_or(io::Error::from(io::ErrorKind::NotFound))?;
++        let bytes = web::fetch(path.as_os_str().as_encoded_bytes()).ok_or_else(|| {
++            io::const_error!(io::ErrorKind::NotFound, "the browser could not fetch the file")
++        })?;
++        self.len.store(bytes.len() as u64, Ordering::Relaxed);
 +        let mut data = self.data.write().unwrap_or_else(|e| e.into_inner());
 +        if data.is_none() {
-+            let (path, _) = self.lazy.as_ref().ok_or(io::Error::from(io::ErrorKind::NotFound))?;
-+            let bytes = web::fetch(path.as_os_str().as_encoded_bytes()).ok_or_else(|| {
-+                io::const_error!(io::ErrorKind::NotFound, "the browser could not fetch the file")
-+            })?;
 +            *data = Some(bytes);
 +        }
 +        Ok(())
 +    }
 +
 +    fn size(&self) -> u64 {
-+        match &*self.data.read().unwrap_or_else(|e| e.into_inner()) {
-+            Some(data) => data.len() as u64,
-+            None => self.lazy.as_ref().map_or(0, |(_, size)| *size),
-+        }
++        self.len.load(Ordering::Relaxed)
 +    }
 +
 +    fn touch(&self) {
@@ -272,7 +290,9 @@ diff -ruN library.orig/std/src/sys/fs/memfs.rs library/std/src/sys/fs/memfs.rs
 +pub struct File {
 +    /// `None` for a directory opened to read its metadata or sync it.
 +    node: Option<Arc<FileNode>>,
-+    pos: AtomicU64,
++    /// The cursor, shared with duplicates as a descriptor's offset is, and held through a read
++    /// or write so concurrent ones don't overlap.
++    pos: Arc<Mutex<u64>>,
 +    read: bool,
 +    write: bool,
 +    append: bool,
@@ -452,8 +472,15 @@ diff -ruN library.orig/std/src/sys/fs/memfs.rs library/std/src/sys/fs/memfs.rs
 +
 +impl File {
 +    pub fn open(path: &Path, opts: &OpenOptions) -> io::Result<File> {
-+        let path = normalize(path)?;
++        // The combinations std's unix backend refuses (get_access_mode, get_creation_mode).
 +        let writes = opts.write || opts.append;
++        let invalid = !opts.read && !writes
++            || !writes && (opts.truncate || opts.create || opts.create_new)
++            || opts.append && opts.truncate && !opts.create_new;
++        if invalid {
++            return Err(io::Error::from(io::ErrorKind::InvalidInput));
++        }
++        let path = normalize(path)?;
 +        let node = {
 +            let mut tree = tree();
 +            match tree.get(&path) {
@@ -477,13 +504,14 @@ diff -ruN library.orig/std/src/sys/fs/memfs.rs library/std/src/sys/fs/memfs.rs
 +        if let Some(file) = &node {
 +            if opts.truncate && writes {
 +                *file.data.write().unwrap_or_else(|e| e.into_inner()) = Some(Vec::new());
++                file.len.store(0, Ordering::Relaxed);
 +                file.touch();
 +            }
 +        }
 +        Ok(File {
 +            node,
-+            pos: AtomicU64::new(0),
-+            read: opts.read || !writes,
++            pos: Arc::new(Mutex::new(0)),
++            read: opts.read,
 +            write: writes,
 +            append: opts.append,
 +        })
@@ -529,10 +557,14 @@ diff -ruN library.orig/std/src/sys/fs/memfs.rs library/std/src/sys/fs/memfs.rs
 +    }
 +
 +    pub fn truncate(&self, size: u64) -> io::Result<()> {
++        if !self.write {
++            return Err(io::const_error!(io::ErrorKind::InvalidInput, "not open for writing"));
++        }
 +        let file = self.file()?;
 +        file.load()?;
 +        let mut data = file.data.write().unwrap_or_else(|e| e.into_inner());
 +        data.get_or_insert_default().resize(size as usize, 0);
++        file.len.store(size, Ordering::Relaxed);
 +        drop(data);
 +        file.touch();
 +        Ok(())
@@ -544,12 +576,16 @@ diff -ruN library.orig/std/src/sys/fs/memfs.rs library/std/src/sys/fs/memfs.rs
 +        }
 +        let file = self.file()?;
 +        file.load()?;
++        let mut pos = web::lock(&self.pos);
 +        let data = file.data.read().unwrap_or_else(|e| e.into_inner());
 +        let data = data.as_deref().unwrap_or_default();
-+        let pos = (self.pos.load(Ordering::Relaxed) as usize).min(data.len());
-+        let n = buf.len().min(data.len() - pos);
-+        buf[..n].copy_from_slice(&data[pos..pos + n]);
-+        self.pos.store((pos + n) as u64, Ordering::Relaxed);
++        // At or past the end: nothing read, and the cursor stays where it was sought.
++        let Some(left) = usize::try_from(*pos).ok().and_then(|at| data.get(at..)) else {
++            return Ok(0);
++        };
++        let n = buf.len().min(left.len());
++        buf[..n].copy_from_slice(&left[..n]);
++        *pos += n as u64;
 +        Ok(n)
 +    }
 +
@@ -581,14 +617,16 @@ diff -ruN library.orig/std/src/sys/fs/memfs.rs library/std/src/sys/fs/memfs.rs
 +        }
 +        let file = self.file()?;
 +        file.load()?;
++        let mut cursor = web::lock(&self.pos);
 +        let mut data = file.data.write().unwrap_or_else(|e| e.into_inner());
 +        let data = data.get_or_insert_default();
-+        let pos = if self.append { data.len() } else { self.pos.load(Ordering::Relaxed) as usize };
++        let pos = if self.append { data.len() } else { *cursor as usize };
 +        if data.len() < pos + buf.len() {
 +            data.resize(pos + buf.len(), 0);
 +        }
 +        data[pos..pos + buf.len()].copy_from_slice(buf);
-+        self.pos.store((pos + buf.len()) as u64, Ordering::Relaxed);
++        file.len.store(data.len() as u64, Ordering::Relaxed);
++        *cursor = (pos + buf.len()) as u64;
 +        file.touch();
 +        Ok(buf.len())
 +    }
@@ -610,19 +648,20 @@ diff -ruN library.orig/std/src/sys/fs/memfs.rs library/std/src/sys/fs/memfs.rs
 +    }
 +
 +    pub fn seek(&self, pos: SeekFrom) -> io::Result<u64> {
++        let mut cursor = web::lock(&self.pos);
 +        let (base, offset) = match pos {
 +            SeekFrom::Start(n) => {
-+                self.pos.store(n, Ordering::Relaxed);
++                *cursor = n;
 +                return Ok(n);
 +            }
 +            SeekFrom::End(offset) => (self.file()?.size(), offset),
-+            SeekFrom::Current(offset) => (self.pos.load(Ordering::Relaxed), offset),
++            SeekFrom::Current(offset) => (*cursor, offset),
 +        };
 +        let new = base.checked_add_signed(offset).ok_or(io::const_error!(
 +            io::ErrorKind::InvalidInput,
 +            "invalid seek to a negative or overflowing position"
 +        ))?;
-+        self.pos.store(new, Ordering::Relaxed);
++        *cursor = new;
 +        Ok(new)
 +    }
 +
@@ -631,13 +670,13 @@ diff -ruN library.orig/std/src/sys/fs/memfs.rs library/std/src/sys/fs/memfs.rs
 +    }
 +
 +    pub fn tell(&self) -> io::Result<u64> {
-+        Ok(self.pos.load(Ordering::Relaxed))
++        Ok(*web::lock(&self.pos))
 +    }
 +
 +    pub fn duplicate(&self) -> io::Result<File> {
 +        Ok(File {
 +            node: self.node.clone(),
-+            pos: AtomicU64::new(self.pos.load(Ordering::Relaxed)),
++            pos: self.pos.clone(),
 +            read: self.read,
 +            write: self.write,
 +            append: self.append,
@@ -675,7 +714,7 @@ diff -ruN library.orig/std/src/sys/fs/memfs.rs library/std/src/sys/fs/memfs.rs
 +
 +impl fmt::Debug for File {
 +    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-+        f.debug_struct("File").field("pos", &self.pos).finish()
++        f.debug_struct("File").field("pos", &*web::lock(&self.pos)).finish()
 +    }
 +}
 +
@@ -870,8 +909,8 @@ diff -ruN library.orig/std/src/sys/fs/memfs.rs library/std/src/sys/fs/memfs.rs
 +    Ok(bytes.len() as u64)
 +}
 diff -ruN library.orig/std/src/sys/fs/mod.rs library/std/src/sys/fs/mod.rs
---- library.orig/std/src/sys/fs/mod.rs	2026-10-27 14:01:34
-+++ library/std/src/sys/fs/mod.rs	2026-10-27 14:01:37
+--- library.orig/std/src/sys/fs/mod.rs	2026-10-27 16:38:28
++++ library/std/src/sys/fs/mod.rs	2026-10-27 16:38:31
 @@ -47,6 +47,10 @@
          mod vexos;
          use vexos as imp;
@@ -884,8 +923,8 @@ diff -ruN library.orig/std/src/sys/fs/mod.rs library/std/src/sys/fs/mod.rs
          mod unsupported;
          use unsupported as imp;
 diff -ruN library.orig/std/src/sys/mod.rs library/std/src/sys/mod.rs
---- library.orig/std/src/sys/mod.rs	2026-10-27 14:01:34
-+++ library/std/src/sys/mod.rs	2026-10-27 14:01:37
+--- library.orig/std/src/sys/mod.rs	2026-10-27 16:38:28
++++ library/std/src/sys/mod.rs	2026-10-27 16:38:31
 @@ -28,6 +28,8 @@
  pub mod thread;
  pub mod thread_local;
@@ -896,8 +935,8 @@ diff -ruN library.orig/std/src/sys/mod.rs library/std/src/sys/mod.rs
  // FIXME(117276): remove this, move feature implementations into individual
  //                submodules.
 diff -ruN library.orig/std/src/sys/paths/mod.rs library/std/src/sys/paths/mod.rs
---- library.orig/std/src/sys/paths/mod.rs	2026-10-27 14:01:34
-+++ library/std/src/sys/paths/mod.rs	2026-10-27 14:01:37
+--- library.orig/std/src/sys/paths/mod.rs	2026-10-27 16:38:28
++++ library/std/src/sys/paths/mod.rs	2026-10-27 16:38:31
 @@ -58,6 +58,18 @@
          mod windows;
          use windows as imp;
@@ -919,7 +958,7 @@ diff -ruN library.orig/std/src/sys/paths/mod.rs library/std/src/sys/paths/mod.rs
          use unsupported as imp;
 diff -ruN library.orig/std/src/sys/paths/web.rs library/std/src/sys/paths/web.rs
 --- library.orig/std/src/sys/paths/web.rs	1969-12-31 19:00:00
-+++ library/std/src/sys/paths/web.rs	2026-10-27 14:01:37
++++ library/std/src/sys/paths/web.rs	2026-10-27 16:38:31
 @@ -0,0 +1,36 @@
 +//! The working directory, home and temp folders of the in-memory file system (`sys::fs::memfs`).
 +use crate::io;
@@ -958,8 +997,8 @@ diff -ruN library.orig/std/src/sys/paths/web.rs library/std/src/sys/paths/web.rs
 +    )
 +}
 diff -ruN library.orig/std/src/sys/process/unsupported.rs library/std/src/sys/process/unsupported.rs
---- library.orig/std/src/sys/process/unsupported.rs	2026-10-27 14:01:34
-+++ library/std/src/sys/process/unsupported.rs	2026-10-27 14:01:37
+--- library.orig/std/src/sys/process/unsupported.rs	2026-10-27 16:38:28
++++ library/std/src/sys/process/unsupported.rs	2026-10-27 16:38:31
 @@ -332,5 +332,11 @@
  }
  
@@ -974,8 +1013,8 @@ diff -ruN library.orig/std/src/sys/process/unsupported.rs library/std/src/sys/pr
 +    }
  }
 diff -ruN library.orig/std/src/sys/stdio/mod.rs library/std/src/sys/stdio/mod.rs
---- library.orig/std/src/sys/stdio/mod.rs	2026-10-27 14:01:34
-+++ library/std/src/sys/stdio/mod.rs	2026-10-27 14:01:37
+--- library.orig/std/src/sys/stdio/mod.rs	2026-10-27 16:38:28
++++ library/std/src/sys/stdio/mod.rs	2026-10-27 16:38:31
 @@ -45,6 +45,10 @@
          mod zkvm;
          pub use zkvm::*;
@@ -989,7 +1028,7 @@ diff -ruN library.orig/std/src/sys/stdio/mod.rs library/std/src/sys/stdio/mod.rs
          pub use unsupported::*;
 diff -ruN library.orig/std/src/sys/stdio/web.rs library/std/src/sys/stdio/web.rs
 --- library.orig/std/src/sys/stdio/web.rs	1969-12-31 19:00:00
-+++ library/std/src/sys/stdio/web.rs	2026-10-27 14:01:37
++++ library/std/src/sys/stdio/web.rs	2026-10-27 16:38:31
 @@ -0,0 +1,71 @@
 +//! Standard output and error go to the browser's console (`sys::web::print`); stdin is empty.
 +use crate::io::{self, BorrowedCursor, IoSliceMut};
@@ -1063,8 +1102,8 @@ diff -ruN library.orig/std/src/sys/stdio/web.rs library/std/src/sys/stdio/web.rs
 +    Some(Stderr::new())
 +}
 diff -ruN library.orig/std/src/sys/sync/futex/wasm.rs library/std/src/sys/sync/futex/wasm.rs
---- library.orig/std/src/sys/sync/futex/wasm.rs	2026-10-27 14:01:34
-+++ library/std/src/sys/sync/futex/wasm.rs	2026-10-27 14:01:37
+--- library.orig/std/src/sys/sync/futex/wasm.rs	2026-10-27 16:38:28
++++ library/std/src/sys/sync/futex/wasm.rs	2026-10-27 16:38:31
 @@ -22,6 +22,11 @@
  ///
  /// Returns false on timeout, and true in all other cases.
@@ -1078,8 +1117,8 @@ diff -ruN library.orig/std/src/sys/sync/futex/wasm.rs library/std/src/sys/sync/f
      unsafe {
          wasm::memory_atomic_wait32(
 diff -ruN library.orig/std/src/sys/thread/mod.rs library/std/src/sys/thread/mod.rs
---- library.orig/std/src/sys/thread/mod.rs	2026-10-27 14:01:34
-+++ library/std/src/sys/thread/mod.rs	2026-10-27 14:01:37
+--- library.orig/std/src/sys/thread/mod.rs	2026-10-27 16:38:28
++++ library/std/src/sys/thread/mod.rs	2026-10-27 16:38:31
 @@ -100,6 +100,13 @@
              DEFAULT_MIN_STACK_SIZE, Thread, available_parallelism, current_os_id, set_name,
          };
@@ -1096,7 +1135,7 @@ diff -ruN library.orig/std/src/sys/thread/mod.rs library/std/src/sys/thread/mod.
          pub use wasm::sleep;
 diff -ruN library.orig/std/src/sys/thread/web.rs library/std/src/sys/thread/web.rs
 --- library.orig/std/src/sys/thread/web.rs	1969-12-31 19:00:00
-+++ library/std/src/sys/thread/web.rs	2026-10-27 16:35:59
++++ library/std/src/sys/thread/web.rs	2026-10-27 16:38:31
 @@ -0,0 +1,88 @@
 +//! Threads on Web Workers: the program's `__horizon_web_spawn` starts a worker on the shared
 +//! memory, and the worker calls `__horizon_std_thread_main` with the packet.
@@ -1187,8 +1226,8 @@ diff -ruN library.orig/std/src/sys/thread/web.rs library/std/src/sys/thread/web.
 +    }
 +}
 diff -ruN library.orig/std/src/sys/time/mod.rs library/std/src/sys/time/mod.rs
---- library.orig/std/src/sys/time/mod.rs	2026-10-27 14:01:34
-+++ library/std/src/sys/time/mod.rs	2026-10-27 14:01:37
+--- library.orig/std/src/sys/time/mod.rs	2026-10-27 16:38:28
++++ library/std/src/sys/time/mod.rs	2026-10-27 16:38:31
 @@ -36,6 +36,10 @@
          mod xous;
          use xous as imp;
@@ -1202,7 +1241,7 @@ diff -ruN library.orig/std/src/sys/time/mod.rs library/std/src/sys/time/mod.rs
          use unsupported as imp;
 diff -ruN library.orig/std/src/sys/time/web.rs library/std/src/sys/time/web.rs
 --- library.orig/std/src/sys/time/web.rs	1969-12-31 19:00:00
-+++ library/std/src/sys/time/web.rs	2026-10-27 14:01:37
++++ library/std/src/sys/time/web.rs	2026-10-27 16:38:31
 @@ -0,0 +1,51 @@
 +//! Both clocks read the browser's: see `sys::web::now`.
 +use crate::sys::web;
@@ -1257,7 +1296,7 @@ diff -ruN library.orig/std/src/sys/time/web.rs library/std/src/sys/time/web.rs
 +}
 diff -ruN library.orig/std/src/sys/web.rs library/std/src/sys/web.rs
 --- library.orig/std/src/sys/web.rs	1969-12-31 19:00:00
-+++ library/std/src/sys/web.rs	2026-10-27 14:01:37
++++ library/std/src/sys/web.rs	2026-10-27 16:38:31
 @@ -0,0 +1,105 @@
 +//! Horizon's browser build: wasm32-unknown-unknown with atomics, each thread a Web Worker.
 +//!

@@ -13231,6 +13231,14 @@ impl ApplicationHandler for Game<'_> {
                     if !self.frame_due() {
                         return Ok(());
                     }
+                    // Nothing else reads the GPU's frame times in the browser (no control
+                    // socket, no benchmark).
+                    #[cfg(target_arch = "wasm32")]
+                    if let Some(r) = &mut self.renderer {
+                        r.set_gpu_timing(
+                            self.settings.horizon.overlay != horizon_client::graphics::Overlay::Off,
+                        );
+                    }
                     self.observe_fullscreen();
                     let now = Instant::now();
                     let frame_cpu = self
