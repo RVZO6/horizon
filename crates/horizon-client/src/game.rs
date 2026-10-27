@@ -15266,16 +15266,22 @@ fn run_loading(
         menu,
         error: None,
     };
-    let mut app = App::Loading(Box::new(loading));
+    let app = App::Loading(Box::new(loading));
     // The browser runs the loop from its own event loop once this returns; `App::exiting` reports
     // the error.
     #[cfg(target_arch = "wasm32")]
     {
         use winit::platform::web::EventLoopExtWebSys;
         EventLoop::new()?.spawn_app(app);
-        return Ok(());
+        Ok(())
     }
     #[cfg(not(target_arch = "wasm32"))]
+    finish_loading(app)
+}
+
+/// After the native event loop: the report and the error the game ended with.
+#[cfg(not(target_arch = "wasm32"))]
+fn finish_loading(mut app: App) -> Result<()> {
     EventLoop::new()?.run_app(&mut app)?;
     horizon_client::discord_presence::stop();
     match app {

@@ -1138,9 +1138,21 @@ impl Game<'_> {
         let Some(renderer) = self.renderer.as_mut() else {
             return;
         };
-        let path = dir.join(name);
-        renderer.screenshot = Some(path.clone());
-        self.ui.screenshot_message = Some(path);
+        // The browser saves the frame on screen as a download: its WebGPU canvas lends no copy
+        // to read back, and a readback could not finish inside the frame anyway.
+        #[cfg(target_arch = "wasm32")]
+        {
+            let size = [renderer.config.width, renderer.config.height];
+            horizon_web::save_canvas(&name);
+            self.ui.screenshot_message = Some(dir.join(name));
+            self.finish_screenshot(&Ok(size));
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let path = dir.join(name);
+            renderer.screenshot = Some(path.clone());
+            self.ui.screenshot_message = Some(path);
+        }
     }
     /// After a frame: report a finished F2 screenshot in chat.
     pub(super) fn finish_screenshot(&mut self, result: &std::result::Result<[u32; 2], String>) {

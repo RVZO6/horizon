@@ -57,6 +57,18 @@ export function fetch_sync(path) {
 export function loading(progress, ready) {
     self.dispatchEvent(new CustomEvent('horizon-loading', { detail: { progress, ready } }));
 }
+// The frame on screen as a PNG download (`save_canvas`).
+export function save_canvas(name) {
+    const canvas = document.querySelector('canvas:not(.horizon-overlay)');
+    canvas?.toBlob((blob) => {
+        if (!blob) return;
+        const link = document.createElement('a');
+        link.href = URL.createObjectURL(blob);
+        link.download = name;
+        link.click();
+        setTimeout(() => URL.revokeObjectURL(link.href), 10000);
+    }, 'image/png');
+}
 // web/www/spawner.js starts a replacement.
 export function worker_taken() {
     self.horizonThreads ??= new BroadcastChannel(self.horizonChannel);
@@ -71,6 +83,13 @@ extern "C" {
     fn worker_taken();
     #[wasm_bindgen(js_name = loading)]
     fn loading_event(progress: f32, ready: bool);
+    #[wasm_bindgen(js_name = save_canvas)]
+    fn save_canvas_js(name: &str);
+}
+
+/// F2: the game's canvas, as it is on screen, downloaded as a PNG named `name`.
+pub fn save_canvas(name: &str) {
+    save_canvas_js(name);
 }
 
 static WANTS_POINTER_LOCK: AtomicBool = AtomicBool::new(false);
