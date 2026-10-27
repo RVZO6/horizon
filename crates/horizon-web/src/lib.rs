@@ -16,6 +16,7 @@ static ALLOCATOR: alloc::Allocator = alloc::Allocator;
 
 use std::cell::RefCell;
 use std::collections::VecDeque;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Condvar, Mutex};
 use wasm_bindgen::prelude::*;
 
@@ -70,6 +71,31 @@ extern "C" {
     fn worker_taken();
     #[wasm_bindgen(js_name = loading)]
     fn loading_event(progress: f32, ready: bool);
+}
+
+static WANTS_POINTER_LOCK: AtomicBool = AtomicBool::new(false);
+static POINTER_LOST: AtomicBool = AtomicBool::new(false);
+
+/// The game captures the mouse (or lets it go). A browser locks the pointer only on a click, so the
+/// page asks on the next one (web/www/main.js), as vanilla grabs the mouse on a click.
+pub fn want_pointer_lock(want: bool) {
+    WANTS_POINTER_LOCK.store(want, Ordering::Relaxed);
+}
+
+#[wasm_bindgen]
+pub fn horizon_web_wants_pointer_lock() -> bool {
+    WANTS_POINTER_LOCK.load(Ordering::Relaxed)
+}
+
+/// The browser let the pointer go (Escape, another tab).
+#[wasm_bindgen]
+pub fn horizon_web_pointer_lost() {
+    POINTER_LOST.store(true, Ordering::Relaxed);
+}
+
+/// Whether the browser let the pointer go since the last call.
+pub fn take_pointer_lost() -> bool {
+    POINTER_LOST.swap(false, Ordering::Relaxed)
 }
 
 /// The game's loading screen, for the page's (web/www/overlay.js): how far the resources are, and

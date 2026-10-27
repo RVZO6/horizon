@@ -8,6 +8,19 @@ import { loadBundle } from './files.js';
 addEventListener('unhandledrejection', (event) => console.error('horizon: unhandled', event.reason, event.reason?.stack));
 addEventListener('error', (event) => console.error('horizon: error', event.message, event.error?.stack));
 
+// A browser starts sound only after a gesture: resume the game's audio (cpal's AudioContext) on
+// the first click or key.
+const audioContexts = [];
+globalThis.AudioContext = class extends AudioContext {
+    constructor(...args) {
+        super(...args);
+        audioContexts.push(this);
+    }
+};
+for (const type of ['pointerdown', 'keydown']) {
+    addEventListener(type, () => audioContexts.forEach((context) => context.resume()), true);
+}
+
 const t0 = performance.now();
 const ms = () => Math.round(performance.now() - t0);
 const overlay = new LoadingOverlay('fs/res/assets/minecraft/textures/gui/title/mojangstudios.png');
@@ -60,6 +73,20 @@ horizon.horizon_web_chdir(home);
 const args = ['--resources', '/res', ...new URLSearchParams(location.search).getAll('arg')];
 for (const arg of args) horizon.horizon_web_arg(arg);
 await horizon.horizon_run();
+// Pointer lock needs a click, as vanilla grabs the mouse on one; raw movement where offered.
+addEventListener(
+    'mousedown',
+    () => {
+        const canvas = document.querySelector('canvas:not(.horizon-overlay)');
+        if (!canvas || document.pointerLockElement === canvas || !horizon.horizon_web_wants_pointer_lock()) return;
+        const raw = canvas.requestPointerLock({ unadjustedMovement: true });
+        raw?.catch?.(() => canvas.requestPointerLock());
+    },
+    true,
+);
+document.addEventListener('pointerlockchange', () => {
+    if (!document.pointerLockElement) horizon.horizon_web_pointer_lost();
+});
 // Structure templates: until they arrive, the game fetches the ones it needs one by one.
 loadBundle(horizon, memory, await fetch('fs/later.bundle')).then(
     (count) => console.log(`horizon-web: ${count} later files ready after ${ms()} ms`),

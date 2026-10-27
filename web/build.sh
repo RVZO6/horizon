@@ -47,7 +47,7 @@ if [[ $what == probe ]]; then
     "${build[@]}" -p horizon-web --example web_probe
     wasm=$target_dir/wasm32-unknown-unknown/$profile/examples/web_probe.wasm
 else
-    "${build[@]}" -p horizon-client --bin horizon-client --no-default-features
+    "${build[@]}" -p horizon-client --bin horizon-client --no-default-features --features audio
     wasm=$target_dir/wasm32-unknown-unknown/$profile/horizon-client.wasm
 fi
 

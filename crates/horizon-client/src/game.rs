@@ -5580,6 +5580,8 @@ impl Game<'_> {
         }
         // The real pointer takes over from an agent's.
         self.agent_pointer = false;
+        #[cfg(target_arch = "wasm32")]
+        horizon_web::want_pointer_lock(capture);
         let Some(window) = &self.window else { return };
         let size = self.renderer.as_ref().map_or_else(
             || window.inner_size().into(),
@@ -13391,6 +13393,15 @@ impl ApplicationHandler for Game<'_> {
                 event_loop.exit();
                 return;
             }
+        }
+        // The browser takes Escape to let the pointer go: the game sees the Escape it ate.
+        #[cfg(target_arch = "wasm32")]
+        if horizon_web::take_pointer_lost()
+            && self.captured
+            && self.screen == Screen::Playing
+            && let Err(error) = self.key_pressed(KeyCode::Escape)
+        {
+            self.error = Some(error);
         }
         if self.pending_save.is_some() {
             match self.poll_closing_save() {

@@ -75,6 +75,8 @@ horizon-web = { path = "../horizon-web" }
 wasm-bindgen = "0.2.129"
 wasm-bindgen-futures = "0.4.79"
 wgpu = { version = "30.0.1", default-features = false, features = ["webgpu"] }
+# Sound through WebAudio (the `audio` feature).
+cpal = { version = "0.16", optional = true, features = ["wasm-bindgen"] }
 
 [target.'cfg(unix)'.dependencies]
 # The server thread's CPU time per tick (`HORIZON_SPIKES`, spans.rs).
