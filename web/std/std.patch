@@ -1,0 +1,1344 @@
+diff -ruN library.orig/std/src/sys/args/mod.rs library/std/src/sys/args/mod.rs
+--- library.orig/std/src/sys/args/mod.rs	2026-10-27 13:34:53
++++ library/std/src/sys/args/mod.rs	2026-10-27 13:34:56
+@@ -64,6 +64,10 @@
+         mod zkvm;
+         pub use zkvm::*;
+     }
++    all(target_family = "wasm", target_os = "unknown", target_feature = "atomics") => {
++        mod web;
++        pub use web::*;
++    }
+     _ => {
+         mod unsupported;
+         pub use unsupported::*;
+diff -ruN library.orig/std/src/sys/args/web.rs library/std/src/sys/args/web.rs
+--- library.orig/std/src/sys/args/web.rs	1969-12-31 19:00:00
++++ library/std/src/sys/args/web.rs	2026-10-27 13:34:56
+@@ -0,0 +1,44 @@
++//! The arguments the program pushed with `__horizon_std_push_arg`.
++use crate::ffi::OsString;
++use crate::sys::web::{ARGS, lock};
++use crate::{fmt, vec};
++
++pub struct Args {
++    iter: vec::IntoIter<OsString>,
++}
++
++pub fn args() -> Args {
++    let mut all = vec![OsString::from("horizon")];
++    all.extend(lock(&ARGS).iter().cloned());
++    Args { iter: all.into_iter() }
++}
++
++impl fmt::Debug for Args {
++    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
++        f.debug_list().entries(self.iter.as_slice()).finish()
++    }
++}
++
++impl Iterator for Args {
++    type Item = OsString;
++
++    fn next(&mut self) -> Option<OsString> {
++        self.iter.next()
++    }
++
++    fn size_hint(&self) -> (usize, Option<usize>) {
++        self.iter.size_hint()
++    }
++}
++
++impl DoubleEndedIterator for Args {
++    fn next_back(&mut self) -> Option<OsString> {
++        self.iter.next_back()
++    }
++}
++
++impl ExactSizeIterator for Args {
++    fn len(&self) -> usize {
++        self.iter.len()
++    }
++}
+diff -ruN library.orig/std/src/sys/env/mod.rs library/std/src/sys/env/mod.rs
+--- library.orig/std/src/sys/env/mod.rs	2026-10-27 13:34:53
++++ library/std/src/sys/env/mod.rs	2026-10-27 13:34:56
+@@ -11,6 +11,7 @@
+     target_os = "uefi",
+     target_os = "wasi",
+     target_os = "xous",
++    all(target_family = "wasm", target_os = "unknown", target_feature = "atomics"),
+ ))]
+ mod common;
+ 
+@@ -54,6 +55,10 @@
+     target_os = "zkvm" => {
+         mod zkvm;
+         pub use zkvm::*;
++    }
++    all(target_family = "wasm", target_os = "unknown", target_feature = "atomics") => {
++        mod web;
++        pub use web::*;
+     }
+     _ => {
+         mod unsupported;
+diff -ruN library.orig/std/src/sys/env/web.rs library/std/src/sys/env/web.rs
+--- library.orig/std/src/sys/env/web.rs	1969-12-31 19:00:00
++++ library/std/src/sys/env/web.rs	2026-10-27 13:34:56
+@@ -0,0 +1,23 @@
++//! An environment kept in memory (`sys::web::ENV`), set by the program.
++pub use super::common::Env;
++use crate::ffi::{OsStr, OsString};
++use crate::io;
++use crate::sys::web::{ENV, lock};
++
++pub fn env() -> Env {
++    Env::new(lock(&ENV).iter().map(|(k, v)| (k.clone(), v.clone())).collect())
++}
++
++pub fn getenv(key: &OsStr) -> Option<OsString> {
++    lock(&ENV).get(key).cloned()
++}
++
++pub unsafe fn setenv(key: &OsStr, value: &OsStr) -> io::Result<()> {
++    lock(&ENV).insert(key.to_owned(), value.to_owned());
++    Ok(())
++}
++
++pub unsafe fn unsetenv(key: &OsStr) -> io::Result<()> {
++    lock(&ENV).remove(key);
++    Ok(())
++}
+diff -ruN library.orig/std/src/sys/fs/memfs.rs library/std/src/sys/fs/memfs.rs
+--- library.orig/std/src/sys/fs/memfs.rs	1969-12-31 19:00:00
++++ library/std/src/sys/fs/memfs.rs	2026-10-27 13:34:56
+@@ -0,0 +1,739 @@
++//! An in-memory file system for the browser build. Paths are made absolute against the working
++//! directory (`sys::paths::getcwd`); a file registered with `__horizon_std_memfs_lazy` is fetched
++//! (`sys::web::fetch`) the first time it is read.
++use crate::collections::BTreeMap;
++use crate::ffi::OsString;
++use crate::fmt;
++use crate::fs::TryLockError;
++use crate::io::{self, BorrowedCursor, IoSlice, IoSliceMut, SeekFrom};
++use crate::path::{Component, Path, PathBuf};
++use crate::sync::atomic::{AtomicU64, Ordering};
++use crate::sync::{Arc, Mutex, MutexGuard, RwLock};
++pub use crate::sys::fs::common::{Dir, ExtraHomeDirs, ExtraMediaDirs};
++use crate::sys::time::SystemTime;
++use crate::sys::web;
++
++struct FileNode {
++    /// `None` until a lazy file is fetched.
++    data: RwLock<Option<Vec<u8>>>,
++    /// Where a lazy file is fetched from, and its size before then.
++    lazy: Option<(PathBuf, u64)>,
++    modified: Mutex<SystemTime>,
++}
++
++impl FileNode {
++    fn new(data: Option<Vec<u8>>, lazy: Option<(PathBuf, u64)>) -> Arc<FileNode> {
++        Arc::new(FileNode { data: RwLock::new(data), lazy, modified: Mutex::new(SystemTime::now()) })
++    }
++
++    fn load(&self) -> io::Result<()> {
++        if self.data.read().unwrap_or_else(|e| e.into_inner()).is_some() {
++            return Ok(());
++        }
++        let mut data = self.data.write().unwrap_or_else(|e| e.into_inner());
++        if data.is_none() {
++            let (path, _) = self.lazy.as_ref().ok_or(io::Error::from(io::ErrorKind::NotFound))?;
++            let bytes = web::fetch(path.as_os_str().as_encoded_bytes()).ok_or_else(|| {
++                io::const_error!(io::ErrorKind::NotFound, "the browser could not fetch the file")
++            })?;
++            *data = Some(bytes);
++        }
++        Ok(())
++    }
++
++    fn size(&self) -> u64 {
++        match &*self.data.read().unwrap_or_else(|e| e.into_inner()) {
++            Some(data) => data.len() as u64,
++            None => self.lazy.as_ref().map_or(0, |(_, size)| *size),
++        }
++    }
++
++    fn touch(&self) {
++        *web::lock(&self.modified) = SystemTime::now();
++    }
++}
++
++enum Node {
++    Dir(SystemTime),
++    File(Arc<FileNode>),
++}
++
++impl Node {
++    fn attr(&self) -> FileAttr {
++        match self {
++            Node::Dir(modified) => FileAttr { size: 0, dir: true, modified: *modified },
++            Node::File(file) => {
++                FileAttr { size: file.size(), dir: false, modified: *web::lock(&file.modified) }
++            }
++        }
++    }
++}
++
++static TREE: Mutex<BTreeMap<PathBuf, Node>> = Mutex::new(BTreeMap::new());
++
++fn tree() -> MutexGuard<'static, BTreeMap<PathBuf, Node>> {
++    let mut tree = web::lock(&TREE);
++    if tree.is_empty() {
++        for dir in ["/", "/home", "/home/web", "/tmp"] {
++            tree.insert(PathBuf::from(dir), Node::Dir(SystemTime::now()));
++        }
++    }
++    tree
++}
++
++fn normalize(path: &Path) -> io::Result<PathBuf> {
++    let joined;
++    let path = if path.has_root() {
++        path
++    } else {
++        joined = crate::sys::paths::getcwd()?.join(path);
++        &joined
++    };
++    let mut out = PathBuf::from("/");
++    for component in path.components() {
++        match component {
++            Component::Prefix(_) | Component::RootDir | Component::CurDir => {}
++            Component::ParentDir => {
++                out.pop();
++            }
++            Component::Normal(name) => out.push(name),
++        }
++    }
++    Ok(out)
++}
++
++fn not_found() -> io::Error {
++    io::Error::from(io::ErrorKind::NotFound)
++}
++
++/// Fails unless `path`'s parent is a directory.
++fn check_parent(tree: &BTreeMap<PathBuf, Node>, path: &Path) -> io::Result<()> {
++    match path.parent().map(|parent| tree.get(parent)) {
++        Some(Some(Node::Dir(_))) | None => Ok(()),
++        Some(Some(Node::File(_))) => {
++            Err(io::const_error!(io::ErrorKind::NotADirectory, "a parent is a file"))
++        }
++        Some(None) => Err(not_found()),
++    }
++}
++
++/// `path` and everything under it.
++fn subtree(tree: &BTreeMap<PathBuf, Node>, path: &Path) -> Vec<PathBuf> {
++    tree.range(path.to_path_buf()..).map(|(k, _)| k).take_while(|k| k.starts_with(path)).cloned().collect()
++}
++
++/// Registers a file the browser fetches when it is first read; missing parents are created.
++#[unsafe(no_mangle)]
++pub unsafe extern "C" fn __horizon_std_memfs_lazy(ptr: *const u8, len: usize, size: u64) {
++    let bytes = unsafe { crate::slice::from_raw_parts(ptr, len) };
++    let path = PathBuf::from(crate::string::String::from_utf8_lossy(bytes).into_owned());
++    let Ok(path) = normalize(&path) else { return };
++    let mut tree = tree();
++    let mut parent = path.parent();
++    while let Some(dir) = parent {
++        tree.entry(dir.to_path_buf()).or_insert_with(|| Node::Dir(SystemTime::now()));
++        parent = dir.parent();
++    }
++    tree.insert(path.clone(), Node::File(FileNode::new(None, Some((path, size)))));
++}
++
++pub struct File {
++    /// `None` for a directory opened to read its metadata or sync it.
++    node: Option<Arc<FileNode>>,
++    pos: AtomicU64,
++    read: bool,
++    write: bool,
++    append: bool,
++}
++
++#[derive(Clone)]
++pub struct FileAttr {
++    size: u64,
++    dir: bool,
++    modified: SystemTime,
++}
++
++pub struct ReadDir {
++    root: PathBuf,
++    entries: crate::vec::IntoIter<DirEntry>,
++}
++
++pub struct DirEntry {
++    path: PathBuf,
++    attr: FileAttr,
++}
++
++#[derive(Clone, Debug)]
++pub struct OpenOptions {
++    read: bool,
++    write: bool,
++    append: bool,
++    truncate: bool,
++    create: bool,
++    create_new: bool,
++}
++
++#[derive(Copy, Clone, Debug, Default)]
++pub struct FileTimes {
++    modified: Option<SystemTime>,
++}
++
++#[derive(Clone, PartialEq, Eq, Debug)]
++pub struct FilePermissions {
++    readonly: bool,
++}
++
++#[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
++pub struct FileType {
++    dir: bool,
++}
++
++#[derive(Debug)]
++pub struct DirBuilder {}
++
++impl FileAttr {
++    pub fn size(&self) -> u64 {
++        self.size
++    }
++
++    pub fn perm(&self) -> FilePermissions {
++        FilePermissions { readonly: false }
++    }
++
++    pub fn file_type(&self) -> FileType {
++        FileType { dir: self.dir }
++    }
++
++    pub fn modified(&self) -> io::Result<SystemTime> {
++        Ok(self.modified)
++    }
++
++    pub fn accessed(&self) -> io::Result<SystemTime> {
++        Ok(self.modified)
++    }
++
++    pub fn created(&self) -> io::Result<SystemTime> {
++        Ok(self.modified)
++    }
++}
++
++impl FilePermissions {
++    pub fn readonly(&self) -> bool {
++        self.readonly
++    }
++
++    pub fn set_readonly(&mut self, readonly: bool) {
++        self.readonly = readonly
++    }
++}
++
++impl FileTimes {
++    pub fn set_accessed(&mut self, _t: SystemTime) {}
++    pub fn set_modified(&mut self, t: SystemTime) {
++        self.modified = Some(t);
++    }
++}
++
++impl FileType {
++    pub fn is_dir(&self) -> bool {
++        self.dir
++    }
++
++    pub fn is_file(&self) -> bool {
++        !self.dir
++    }
++
++    pub fn is_symlink(&self) -> bool {
++        false
++    }
++}
++
++impl ReadDir {
++    pub fn dir(&self) -> io::Result<Dir> {
++        Dir::open_for_traversal(&self.root)
++    }
++}
++
++impl fmt::Debug for ReadDir {
++    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
++        f.debug_struct("ReadDir").field("root", &self.root).finish()
++    }
++}
++
++impl Iterator for ReadDir {
++    type Item = io::Result<DirEntry>;
++
++    fn next(&mut self) -> Option<io::Result<DirEntry>> {
++        self.entries.next().map(Ok)
++    }
++}
++
++impl DirEntry {
++    pub fn path(&self) -> PathBuf {
++        self.path.clone()
++    }
++
++    pub fn file_name(&self) -> OsString {
++        self.path.file_name().map(|n| n.to_owned()).unwrap_or_default()
++    }
++
++    pub fn metadata(&self) -> io::Result<FileAttr> {
++        Ok(self.attr.clone())
++    }
++
++    pub fn file_type(&self) -> io::Result<FileType> {
++        Ok(self.attr.file_type())
++    }
++}
++
++impl OpenOptions {
++    pub fn new() -> OpenOptions {
++        OpenOptions {
++            read: false,
++            write: false,
++            append: false,
++            truncate: false,
++            create: false,
++            create_new: false,
++        }
++    }
++
++    pub fn read(&mut self, read: bool) {
++        self.read = read;
++    }
++    pub fn write(&mut self, write: bool) {
++        self.write = write;
++    }
++    pub fn append(&mut self, append: bool) {
++        self.append = append;
++    }
++    pub fn truncate(&mut self, truncate: bool) {
++        self.truncate = truncate;
++    }
++    pub fn create(&mut self, create: bool) {
++        self.create = create;
++    }
++    pub fn create_new(&mut self, create_new: bool) {
++        self.create_new = create_new;
++    }
++}
++
++impl File {
++    pub fn open(path: &Path, opts: &OpenOptions) -> io::Result<File> {
++        let path = normalize(path)?;
++        let writes = opts.write || opts.append;
++        let node = {
++            let mut tree = tree();
++            match tree.get(&path) {
++                Some(_) if opts.create_new => {
++                    return Err(io::Error::from(io::ErrorKind::AlreadyExists));
++                }
++                Some(Node::Dir(_)) if writes => {
++                    return Err(io::Error::from(io::ErrorKind::IsADirectory));
++                }
++                Some(Node::Dir(_)) => None,
++                Some(Node::File(file)) => Some(file.clone()),
++                None if opts.create || opts.create_new => {
++                    check_parent(&tree, &path)?;
++                    let file = FileNode::new(Some(Vec::new()), None);
++                    tree.insert(path, Node::File(file.clone()));
++                    Some(file)
++                }
++                None => return Err(not_found()),
++            }
++        };
++        if let Some(file) = &node {
++            if opts.truncate && writes {
++                *file.data.write().unwrap_or_else(|e| e.into_inner()) = Some(Vec::new());
++                file.touch();
++            }
++        }
++        Ok(File {
++            node,
++            pos: AtomicU64::new(0),
++            read: opts.read || !writes,
++            write: writes,
++            append: opts.append,
++        })
++    }
++
++    fn file(&self) -> io::Result<&Arc<FileNode>> {
++        self.node.as_ref().ok_or(io::Error::from(io::ErrorKind::IsADirectory))
++    }
++
++    pub fn file_attr(&self) -> io::Result<FileAttr> {
++        Ok(match &self.node {
++            Some(file) => Node::File(file.clone()).attr(),
++            None => FileAttr { size: 0, dir: true, modified: SystemTime::now() },
++        })
++    }
++
++    pub fn fsync(&self) -> io::Result<()> {
++        Ok(())
++    }
++
++    pub fn datasync(&self) -> io::Result<()> {
++        Ok(())
++    }
++
++    pub fn lock(&self) -> io::Result<()> {
++        Ok(())
++    }
++
++    pub fn lock_shared(&self) -> io::Result<()> {
++        Ok(())
++    }
++
++    pub fn try_lock(&self) -> Result<(), TryLockError> {
++        Ok(())
++    }
++
++    pub fn try_lock_shared(&self) -> Result<(), TryLockError> {
++        Ok(())
++    }
++
++    pub fn unlock(&self) -> io::Result<()> {
++        Ok(())
++    }
++
++    pub fn truncate(&self, size: u64) -> io::Result<()> {
++        let file = self.file()?;
++        file.load()?;
++        let mut data = file.data.write().unwrap_or_else(|e| e.into_inner());
++        data.get_or_insert_default().resize(size as usize, 0);
++        drop(data);
++        file.touch();
++        Ok(())
++    }
++
++    pub fn read(&self, buf: &mut [u8]) -> io::Result<usize> {
++        if !self.read {
++            return Err(io::const_error!(io::ErrorKind::PermissionDenied, "not open for reading"));
++        }
++        let file = self.file()?;
++        file.load()?;
++        let data = file.data.read().unwrap_or_else(|e| e.into_inner());
++        let data = data.as_deref().unwrap_or_default();
++        let pos = (self.pos.load(Ordering::Relaxed) as usize).min(data.len());
++        let n = buf.len().min(data.len() - pos);
++        buf[..n].copy_from_slice(&data[pos..pos + n]);
++        self.pos.store((pos + n) as u64, Ordering::Relaxed);
++        Ok(n)
++    }
++
++    pub fn read_vectored(&self, bufs: &mut [IoSliceMut<'_>]) -> io::Result<usize> {
++        let mut total = 0;
++        for buf in bufs {
++            let n = self.read(buf)?;
++            total += n;
++            if n < buf.len() {
++                break;
++            }
++        }
++        Ok(total)
++    }
++
++    pub fn is_read_vectored(&self) -> bool {
++        false
++    }
++
++    pub fn read_buf(&self, mut cursor: BorrowedCursor<'_, u8>) -> io::Result<()> {
++        let n = self.read(cursor.ensure_init())?;
++        cursor.advance_checked(n);
++        Ok(())
++    }
++
++    pub fn write(&self, buf: &[u8]) -> io::Result<usize> {
++        if !self.write {
++            return Err(io::const_error!(io::ErrorKind::PermissionDenied, "not open for writing"));
++        }
++        let file = self.file()?;
++        file.load()?;
++        let mut data = file.data.write().unwrap_or_else(|e| e.into_inner());
++        let data = data.get_or_insert_default();
++        let pos = if self.append { data.len() } else { self.pos.load(Ordering::Relaxed) as usize };
++        if data.len() < pos + buf.len() {
++            data.resize(pos + buf.len(), 0);
++        }
++        data[pos..pos + buf.len()].copy_from_slice(buf);
++        self.pos.store((pos + buf.len()) as u64, Ordering::Relaxed);
++        file.touch();
++        Ok(buf.len())
++    }
++
++    pub fn write_vectored(&self, bufs: &[IoSlice<'_>]) -> io::Result<usize> {
++        let mut total = 0;
++        for buf in bufs {
++            total += self.write(buf)?;
++        }
++        Ok(total)
++    }
++
++    pub fn is_write_vectored(&self) -> bool {
++        false
++    }
++
++    pub fn flush(&self) -> io::Result<()> {
++        Ok(())
++    }
++
++    pub fn seek(&self, pos: SeekFrom) -> io::Result<u64> {
++        let (base, offset) = match pos {
++            SeekFrom::Start(n) => {
++                self.pos.store(n, Ordering::Relaxed);
++                return Ok(n);
++            }
++            SeekFrom::End(offset) => (self.file()?.size(), offset),
++            SeekFrom::Current(offset) => (self.pos.load(Ordering::Relaxed), offset),
++        };
++        let new = base.checked_add_signed(offset).ok_or(io::const_error!(
++            io::ErrorKind::InvalidInput,
++            "invalid seek to a negative or overflowing position"
++        ))?;
++        self.pos.store(new, Ordering::Relaxed);
++        Ok(new)
++    }
++
++    pub fn size(&self) -> Option<io::Result<u64>> {
++        Some(self.file().map(|f| f.size()))
++    }
++
++    pub fn tell(&self) -> io::Result<u64> {
++        Ok(self.pos.load(Ordering::Relaxed))
++    }
++
++    pub fn duplicate(&self) -> io::Result<File> {
++        Ok(File {
++            node: self.node.clone(),
++            pos: AtomicU64::new(self.pos.load(Ordering::Relaxed)),
++            read: self.read,
++            write: self.write,
++            append: self.append,
++        })
++    }
++
++    pub fn set_permissions(&self, _perm: FilePermissions) -> io::Result<()> {
++        Ok(())
++    }
++
++    pub fn set_times(&self, times: FileTimes) -> io::Result<()> {
++        if let (Some(file), Some(t)) = (&self.node, times.modified) {
++            *web::lock(&file.modified) = t;
++        }
++        Ok(())
++    }
++}
++
++impl DirBuilder {
++    pub fn new() -> DirBuilder {
++        DirBuilder {}
++    }
++
++    pub fn mkdir(&self, p: &Path) -> io::Result<()> {
++        let path = normalize(p)?;
++        let mut tree = tree();
++        if tree.contains_key(&path) {
++            return Err(io::Error::from(io::ErrorKind::AlreadyExists));
++        }
++        check_parent(&tree, &path)?;
++        tree.insert(path, Node::Dir(SystemTime::now()));
++        Ok(())
++    }
++}
++
++impl fmt::Debug for File {
++    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
++        f.debug_struct("File").field("pos", &self.pos).finish()
++    }
++}
++
++pub fn readdir(p: &Path) -> io::Result<ReadDir> {
++    let root = normalize(p)?;
++    let tree = tree();
++    match tree.get(&root) {
++        Some(Node::Dir(_)) => {}
++        Some(Node::File(_)) => {
++            return Err(io::const_error!(io::ErrorKind::NotADirectory, "not a directory"));
++        }
++        None => return Err(not_found()),
++    }
++    let entries: Vec<DirEntry> = tree
++        .range(root.clone()..)
++        .take_while(|(k, _)| k.starts_with(&root))
++        .filter(|(k, _)| k.parent() == Some(&root))
++        .map(|(k, node)| DirEntry { path: p.join(k.file_name().unwrap_or_default()), attr: node.attr() })
++        .collect();
++    Ok(ReadDir { root, entries: entries.into_iter() })
++}
++
++pub fn unlink(p: &Path) -> io::Result<()> {
++    let path = normalize(p)?;
++    let mut tree = tree();
++    match tree.get(&path) {
++        Some(Node::File(_)) => {
++            tree.remove(&path);
++            Ok(())
++        }
++        Some(Node::Dir(_)) => Err(io::Error::from(io::ErrorKind::IsADirectory)),
++        None => Err(not_found()),
++    }
++}
++
++fn rename_in(tree: &mut BTreeMap<PathBuf, Node>, old: &Path, new: &Path) -> io::Result<()> {
++    let old_dir = match tree.get(old) {
++        Some(Node::Dir(_)) => true,
++        Some(Node::File(_)) => false,
++        None => return Err(not_found()),
++    };
++    if old == new {
++        return Ok(());
++    }
++    if new.starts_with(old) {
++        return Err(io::const_error!(io::ErrorKind::InvalidInput, "cannot move into itself"));
++    }
++    check_parent(tree, new)?;
++    match tree.get(new) {
++        Some(Node::Dir(_)) if !old_dir => {
++            return Err(io::Error::from(io::ErrorKind::IsADirectory));
++        }
++        Some(Node::File(_)) if old_dir => {
++            return Err(io::Error::from(io::ErrorKind::NotADirectory));
++        }
++        Some(Node::Dir(_)) if subtree(tree, new).len() > 1 => {
++            return Err(io::Error::from(io::ErrorKind::DirectoryNotEmpty));
++        }
++        _ => {}
++    }
++    tree.remove(new);
++    for key in subtree(tree, old) {
++        let node = tree.remove(&key).unwrap();
++        let moved = if key == old { new.to_path_buf() } else { new.join(key.strip_prefix(old).unwrap()) };
++        tree.insert(moved, node);
++    }
++    Ok(())
++}
++
++pub fn rename(old: &Path, new: &Path) -> io::Result<()> {
++    let (old, new) = (normalize(old)?, normalize(new)?);
++    rename_in(&mut tree(), &old, &new)
++}
++
++pub fn rename_noreplace(old: &Path, new: &Path) -> io::Result<()> {
++    let (old, new) = (normalize(old)?, normalize(new)?);
++    let mut tree = tree();
++    if tree.contains_key(&new) {
++        return Err(io::Error::from(io::ErrorKind::AlreadyExists));
++    }
++    rename_in(&mut tree, &old, &new)
++}
++
++pub fn set_perm(p: &Path, _perm: FilePermissions) -> io::Result<()> {
++    stat(p).map(drop)
++}
++
++pub fn set_perm_nofollow(p: &Path, perm: FilePermissions) -> io::Result<()> {
++    set_perm(p, perm)
++}
++
++pub fn set_times(p: &Path, times: FileTimes) -> io::Result<()> {
++    let path = normalize(p)?;
++    match tree().get(&path) {
++        Some(Node::File(file)) => {
++            if let Some(t) = times.modified {
++                *web::lock(&file.modified) = t;
++            }
++            Ok(())
++        }
++        Some(Node::Dir(_)) => Ok(()),
++        None => Err(not_found()),
++    }
++}
++
++pub fn set_times_nofollow(p: &Path, times: FileTimes) -> io::Result<()> {
++    set_times(p, times)
++}
++
++pub fn rmdir(p: &Path) -> io::Result<()> {
++    let path = normalize(p)?;
++    let mut tree = tree();
++    match tree.get(&path) {
++        Some(Node::Dir(_)) if subtree(&tree, &path).len() > 1 => {
++            Err(io::Error::from(io::ErrorKind::DirectoryNotEmpty))
++        }
++        Some(Node::Dir(_)) => {
++            tree.remove(&path);
++            Ok(())
++        }
++        Some(Node::File(_)) => {
++            Err(io::const_error!(io::ErrorKind::NotADirectory, "not a directory"))
++        }
++        None => Err(not_found()),
++    }
++}
++
++pub fn remove_dir_all(path: &Path) -> io::Result<()> {
++    let path = normalize(path)?;
++    let mut tree = tree();
++    match tree.get(&path) {
++        Some(Node::Dir(_)) => {
++            for key in subtree(&tree, &path) {
++                tree.remove(&key);
++            }
++            Ok(())
++        }
++        Some(Node::File(_)) => {
++            Err(io::const_error!(io::ErrorKind::NotADirectory, "not a directory"))
++        }
++        None => Err(not_found()),
++    }
++}
++
++pub fn exists(path: &Path) -> io::Result<bool> {
++    let path = normalize(path)?;
++    Ok(tree().contains_key(&path))
++}
++
++pub fn readlink(_p: &Path) -> io::Result<PathBuf> {
++    Err(io::const_error!(io::ErrorKind::InvalidInput, "not a symbolic link"))
++}
++
++pub fn symlink(_original: &Path, _link: &Path) -> io::Result<()> {
++    crate::sys::unsupported()
++}
++
++pub fn link(_src: &Path, _dst: &Path) -> io::Result<()> {
++    crate::sys::unsupported()
++}
++
++pub fn stat(p: &Path) -> io::Result<FileAttr> {
++    let path = normalize(p)?;
++    tree().get(&path).map(Node::attr).ok_or_else(not_found)
++}
++
++pub fn lstat(p: &Path) -> io::Result<FileAttr> {
++    stat(p)
++}
++
++pub fn canonicalize(p: &Path) -> io::Result<PathBuf> {
++    let path = normalize(p)?;
++    if tree().contains_key(&path) { Ok(path) } else { Err(not_found()) }
++}
++
++pub fn copy(from: &Path, to: &Path) -> io::Result<u64> {
++    let source = {
++        let path = normalize(from)?;
++        match tree().get(&path) {
++            Some(Node::File(file)) => file.clone(),
++            Some(Node::Dir(_)) => return Err(io::Error::from(io::ErrorKind::IsADirectory)),
++            None => return Err(not_found()),
++        }
++    };
++    source.load()?;
++    let bytes = source.data.read().unwrap_or_else(|e| e.into_inner()).clone().unwrap_or_default();
++    let mut opts = OpenOptions::new();
++    opts.write(true);
++    opts.create(true);
++    opts.truncate(true);
++    File::open(to, &opts)?.write(&bytes)?;
++    Ok(bytes.len() as u64)
++}
+diff -ruN library.orig/std/src/sys/fs/mod.rs library/std/src/sys/fs/mod.rs
+--- library.orig/std/src/sys/fs/mod.rs	2026-10-27 13:34:53
++++ library/std/src/sys/fs/mod.rs	2026-10-27 13:34:56
+@@ -47,6 +47,10 @@
+         mod vexos;
+         use vexos as imp;
+     }
++    all(target_family = "wasm", target_os = "unknown", target_feature = "atomics") => {
++        mod memfs;
++        use memfs as imp;
++    }
+     _ => {
+         mod unsupported;
+         use unsupported as imp;
+diff -ruN library.orig/std/src/sys/mod.rs library/std/src/sys/mod.rs
+--- library.orig/std/src/sys/mod.rs	2026-10-27 13:34:53
++++ library/std/src/sys/mod.rs	2026-10-27 13:34:56
+@@ -28,6 +28,8 @@
+ pub mod thread;
+ pub mod thread_local;
+ pub mod time;
++#[cfg(all(target_family = "wasm", target_os = "unknown", target_feature = "atomics"))]
++pub mod web;
+ 
+ // FIXME(117276): remove this, move feature implementations into individual
+ //                submodules.
+diff -ruN library.orig/std/src/sys/paths/mod.rs library/std/src/sys/paths/mod.rs
+--- library.orig/std/src/sys/paths/mod.rs	2026-10-27 13:34:53
++++ library/std/src/sys/paths/mod.rs	2026-10-27 13:37:18
+@@ -58,6 +58,18 @@
+         mod windows;
+         use windows as imp;
+     }
++    all(target_family = "wasm", target_os = "unknown", target_feature = "atomics") => {
++        mod web;
++        #[expect(dead_code)]
++        mod unsupported;
++        mod imp {
++            pub use super::unsupported::{
++                JoinPathsError, SplitPaths, SplitPathsRef, join_paths, split_paths,
++                split_paths_ref,
++            };
++            pub use super::web::{chdir, current_exe, getcwd, home_dir, temp_dir};
++        }
++    }
+     _ => {
+         mod unsupported;
+         use unsupported as imp;
+diff -ruN library.orig/std/src/sys/paths/web.rs library/std/src/sys/paths/web.rs
+--- library.orig/std/src/sys/paths/web.rs	1969-12-31 19:00:00
++++ library/std/src/sys/paths/web.rs	2026-10-27 13:37:18
+@@ -0,0 +1,36 @@
++//! The working directory, home and temp folders of the in-memory file system (`sys::fs::memfs`).
++use crate::io;
++use crate::path::{Path, PathBuf};
++use crate::sync::Mutex;
++use crate::sys::web::lock;
++
++static CWD: Mutex<Option<PathBuf>> = Mutex::new(None);
++
++pub fn getcwd() -> io::Result<PathBuf> {
++    Ok(lock(&CWD).clone().unwrap_or_else(|| PathBuf::from("/home/web")))
++}
++
++pub fn chdir(path: &Path) -> io::Result<()> {
++    let path = crate::sys::fs::canonicalize(path)?;
++    if !crate::sys::fs::metadata(&path)?.file_type().is_dir() {
++        return Err(io::const_error!(io::ErrorKind::NotADirectory, "not a directory"));
++    }
++    *lock(&CWD) = Some(path);
++    Ok(())
++}
++
++/// The program as the page names it: there is no file behind it.
++pub fn current_exe() -> io::Result<PathBuf> {
++    Ok(PathBuf::from("/app/horizon"))
++}
++
++pub fn temp_dir() -> PathBuf {
++    PathBuf::from("/tmp")
++}
++
++pub fn home_dir() -> Option<PathBuf> {
++    Some(
++        crate::sys::env::getenv("HOME".as_ref())
++            .map_or_else(|| PathBuf::from("/home/web"), PathBuf::from),
++    )
++}
+diff -ruN library.orig/std/src/sys/process/unsupported.rs library/std/src/sys/process/unsupported.rs
+--- library.orig/std/src/sys/process/unsupported.rs	2026-10-27 13:34:53
++++ library/std/src/sys/process/unsupported.rs	2026-10-27 13:34:56
+@@ -332,5 +332,11 @@
+ }
+ 
+ pub fn getpid() -> u32 {
+-    panic!("no pids on this platform")
++    // The browser build is one process.
++    #[cfg(all(target_family = "wasm", target_os = "unknown", target_feature = "atomics"))]
++    return 1;
++    #[allow(unreachable_code)]
++    {
++        panic!("no pids on this platform")
++    }
+ }
+diff -ruN library.orig/std/src/sys/stdio/mod.rs library/std/src/sys/stdio/mod.rs
+--- library.orig/std/src/sys/stdio/mod.rs	2026-10-27 13:34:53
++++ library/std/src/sys/stdio/mod.rs	2026-10-27 13:34:56
+@@ -45,6 +45,10 @@
+         mod zkvm;
+         pub use zkvm::*;
+     }
++    all(target_family = "wasm", target_os = "unknown", target_feature = "atomics") => {
++        mod web;
++        pub use web::*;
++    }
+     _ => {
+         mod unsupported;
+         pub use unsupported::*;
+diff -ruN library.orig/std/src/sys/stdio/web.rs library/std/src/sys/stdio/web.rs
+--- library.orig/std/src/sys/stdio/web.rs	1969-12-31 19:00:00
++++ library/std/src/sys/stdio/web.rs	2026-10-27 13:34:56
+@@ -0,0 +1,71 @@
++//! Standard output and error go to the browser's console (`sys::web::print`); stdin is empty.
++use crate::io::{self, BorrowedCursor, IoSliceMut};
++use crate::sys::web;
++
++pub struct Stdin;
++pub struct Stdout;
++pub struct Stderr;
++
++impl Stdin {
++    pub const fn new() -> Stdin {
++        Stdin
++    }
++}
++
++impl io::Read for Stdin {
++    fn read(&mut self, _buf: &mut [u8]) -> io::Result<usize> {
++        Ok(0)
++    }
++
++    fn read_buf(&mut self, _cursor: BorrowedCursor<'_, u8>) -> io::Result<()> {
++        Ok(())
++    }
++
++    fn read_vectored(&mut self, _bufs: &mut [IoSliceMut<'_>]) -> io::Result<usize> {
++        Ok(0)
++    }
++}
++
++impl Stdout {
++    pub const fn new() -> Stdout {
++        Stdout
++    }
++}
++
++impl io::Write for Stdout {
++    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
++        web::print(1, buf);
++        Ok(buf.len())
++    }
++
++    fn flush(&mut self) -> io::Result<()> {
++        Ok(())
++    }
++}
++
++impl Stderr {
++    pub const fn new() -> Stderr {
++        Stderr
++    }
++}
++
++impl io::Write for Stderr {
++    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
++        web::print(2, buf);
++        Ok(buf.len())
++    }
++
++    fn flush(&mut self) -> io::Result<()> {
++        Ok(())
++    }
++}
++
++pub const STDIN_BUF_SIZE: usize = 0;
++
++pub fn is_ebadf(_err: &io::Error) -> bool {
++    false
++}
++
++pub fn panic_output() -> Option<impl io::Write> {
++    Some(Stderr::new())
++}
+diff -ruN library.orig/std/src/sys/sync/futex/wasm.rs library/std/src/sys/sync/futex/wasm.rs
+--- library.orig/std/src/sys/sync/futex/wasm.rs	2026-10-27 13:34:53
++++ library/std/src/sys/sync/futex/wasm.rs	2026-10-27 13:34:56
+@@ -22,6 +22,11 @@
+ ///
+ /// Returns false on timeout, and true in all other cases.
+ pub fn futex_wait(futex: &Atomic<u32>, expected: u32, timeout: Option<Duration>) -> bool {
++    // The browser's main thread may not block.
++    #[cfg(all(target_family = "wasm", target_os = "unknown", target_feature = "atomics"))]
++    if !crate::sys::web::can_block() {
++        return crate::sys::web::spin_wait(futex, expected, timeout);
++    }
+     let timeout = timeout.and_then(|t| t.as_nanos().try_into().ok()).unwrap_or(-1);
+     unsafe {
+         wasm::memory_atomic_wait32(
+diff -ruN library.orig/std/src/sys/thread/mod.rs library/std/src/sys/thread/mod.rs
+--- library.orig/std/src/sys/thread/mod.rs	2026-10-27 13:34:53
++++ library/std/src/sys/thread/mod.rs	2026-10-27 13:34:56
+@@ -100,6 +100,13 @@
+             DEFAULT_MIN_STACK_SIZE, Thread, available_parallelism, current_os_id, set_name,
+         };
+     }
++    all(target_family = "wasm", target_os = "unknown", target_feature = "atomics") => {
++        mod web;
++        pub use web::{
++            DEFAULT_MIN_STACK_SIZE, Thread, available_parallelism, current_os_id, set_name, sleep,
++            yield_now,
++        };
++    }
+     all(target_family = "wasm", target_feature = "atomics") => {
+         mod wasm;
+         pub use wasm::sleep;
+diff -ruN library.orig/std/src/sys/thread/web.rs library/std/src/sys/thread/web.rs
+--- library.orig/std/src/sys/thread/web.rs	1969-12-31 19:00:00
++++ library/std/src/sys/thread/web.rs	2026-10-27 13:34:56
+@@ -0,0 +1,83 @@
++//! Threads on Web Workers: the program's `__horizon_web_spawn` starts a worker on the shared
++//! memory, and the worker calls `__horizon_std_thread_main` with the packet.
++use crate::ffi::CStr;
++use crate::io;
++use crate::num::NonZero;
++use crate::sync::Arc;
++use crate::sync::atomic::{Atomic, AtomicU32, Ordering};
++use crate::sys::web;
++use crate::thread::ThreadInit;
++use crate::time::Duration;
++
++pub struct Thread {
++    done: Arc<Atomic<u32>>,
++}
++
++/// wasm-bindgen gives every worker the same stack size when it starts.
++pub const DEFAULT_MIN_STACK_SIZE: usize = 1024 * 1024;
++
++struct Packet {
++    init: Box<ThreadInit>,
++    done: Arc<Atomic<u32>>,
++}
++
++impl Thread {
++    // unsafe: see thread::Builder::spawn_unchecked for safety requirements
++    pub unsafe fn new(_stack: usize, init: Box<ThreadInit>) -> io::Result<Thread> {
++        let done = Arc::new(AtomicU32::new(0));
++        let packet = Box::into_raw(Box::new(Packet { init, done: done.clone() }));
++        if web::spawn(packet.cast()) {
++            Ok(Thread { done })
++        } else {
++            drop(unsafe { Box::from_raw(packet) });
++            Err(io::const_error!(io::ErrorKind::Other, "could not start a Web Worker"))
++        }
++    }
++
++    pub fn join(self) {
++        while self.done.load(Ordering::Acquire) == 0 {
++            if web::can_block() {
++                let futex = self.done.as_ptr().cast::<i32>();
++                unsafe { core::arch::wasm32::memory_atomic_wait32(futex, 0, -1) };
++            } else {
++                web::spin_wait(&self.done, 0, None);
++            }
++        }
++    }
++}
++
++/// A new worker's entry point.
++#[unsafe(no_mangle)]
++pub unsafe extern "C" fn __horizon_std_thread_main(packet: *mut u8) {
++    let packet = unsafe { Box::from_raw(packet.cast::<Packet>()) };
++    let Packet { init, done } = *packet;
++    let start = init.init();
++    start();
++    done.store(1, Ordering::Release);
++    unsafe { core::arch::wasm32::memory_atomic_notify(done.as_ptr().cast(), u32::MAX) };
++}
++
++pub fn available_parallelism() -> io::Result<NonZero<usize>> {
++    NonZero::new(web::parallelism()).ok_or(io::Error::UNKNOWN_THREAD_COUNT)
++}
++
++pub fn current_os_id() -> Option<u64> {
++    None
++}
++
++pub fn yield_now() {}
++
++pub fn set_name(_name: &CStr) {}
++
++pub fn sleep(dur: Duration) {
++    if !web::can_block() {
++        return web::spin_sleep(dur);
++    }
++    let mut nanos = dur.as_nanos();
++    while nanos > 0 {
++        let amt = crate::cmp::min(i64::MAX as u128, nanos);
++        let mut x = 0;
++        unsafe { core::arch::wasm32::memory_atomic_wait32(&mut x, 0, amt as i64) };
++        nanos -= amt;
++    }
++}
+diff -ruN library.orig/std/src/sys/time/mod.rs library/std/src/sys/time/mod.rs
+--- library.orig/std/src/sys/time/mod.rs	2026-10-27 13:34:53
++++ library/std/src/sys/time/mod.rs	2026-10-27 13:34:56
+@@ -36,6 +36,10 @@
+         mod xous;
+         use xous as imp;
+     }
++    all(target_family = "wasm", target_os = "unknown", target_feature = "atomics") => {
++        mod web;
++        use web as imp;
++    }
+     _ => {
+         mod unsupported;
+         use unsupported as imp;
+diff -ruN library.orig/std/src/sys/time/web.rs library/std/src/sys/time/web.rs
+--- library.orig/std/src/sys/time/web.rs	1969-12-31 19:00:00
++++ library/std/src/sys/time/web.rs	2026-10-27 13:34:56
+@@ -0,0 +1,51 @@
++//! Both clocks read the browser's: see `sys::web::now`.
++use crate::sys::web;
++use crate::time::Duration;
++
++#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Debug, Hash)]
++pub struct Instant(Duration);
++
++#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Debug, Hash)]
++pub struct SystemTime(Duration);
++
++pub const UNIX_EPOCH: SystemTime = SystemTime(Duration::from_secs(0));
++
++impl Instant {
++    pub fn now() -> Instant {
++        Instant(web::now())
++    }
++
++    pub fn checked_sub_instant(&self, other: &Instant) -> Option<Duration> {
++        self.0.checked_sub(other.0)
++    }
++
++    pub fn checked_add_duration(&self, other: &Duration) -> Option<Instant> {
++        Some(Instant(self.0.checked_add(*other)?))
++    }
++
++    pub fn checked_sub_duration(&self, other: &Duration) -> Option<Instant> {
++        Some(Instant(self.0.checked_sub(*other)?))
++    }
++}
++
++impl SystemTime {
++    pub const MAX: SystemTime = SystemTime(Duration::MAX);
++
++    pub const MIN: SystemTime = SystemTime(Duration::ZERO);
++
++    pub fn now() -> SystemTime {
++        SystemTime(web::now())
++    }
++
++    pub fn sub_time(&self, other: &SystemTime) -> Result<Duration, Duration> {
++        self.0.checked_sub(other.0).ok_or_else(|| other.0 - self.0)
++    }
++
++    pub fn checked_add_duration(&self, other: &Duration) -> Option<SystemTime> {
++        Some(SystemTime(self.0.checked_add(*other)?))
++    }
++
++    pub fn checked_sub_duration(&self, other: &Duration) -> Option<SystemTime> {
++        Some(SystemTime(self.0.checked_sub(*other)?))
++    }
++}
+diff -ruN library.orig/std/src/sys/web.rs library/std/src/sys/web.rs
+--- library.orig/std/src/sys/web.rs	1969-12-31 19:00:00
++++ library/std/src/sys/web.rs	2026-10-27 13:34:56
+@@ -0,0 +1,105 @@
++//! Horizon's browser build: wasm32-unknown-unknown with atomics, each thread a Web Worker.
++//!
++//! The program defines the `__horizon_web_*` functions (crate `horizon-web`) and the linker
++//! resolves them; std defines the `__horizon_std_*` ones for the program to call. The browser's
++//! main thread must never block (`memory.atomic.wait32` traps there), so it spins wherever std
++//! would wait.
++
++use crate::cell::Cell;
++use crate::collections::BTreeMap;
++use crate::ffi::OsString;
++use crate::sync::atomic::{Atomic, AtomicU64, Ordering};
++use crate::sync::{Mutex, MutexGuard, PoisonError};
++use crate::time::Duration;
++
++unsafe extern "C" {
++    /// Milliseconds since the Unix epoch (`performance.timeOrigin + performance.now()`).
++    fn __horizon_web_now() -> f64;
++    /// Starts a Web Worker that calls `__horizon_std_thread_main(packet)`. Zero on success.
++    fn __horizon_web_spawn(packet: *mut u8) -> i32;
++    /// `navigator.hardwareConcurrency`.
++    fn __horizon_web_parallelism() -> u32;
++    /// Console output: fd 1 is stdout, 2 is stderr.
++    fn __horizon_web_print(fd: u32, ptr: *const u8, len: usize);
++    /// Reads a lazily registered file's bytes into `out` (a `*mut Vec<u8>`); false on failure.
++    fn __horizon_web_fetch(path: *const u8, len: usize, out: *mut u8) -> bool;
++}
++
++#[thread_local]
++static CAN_BLOCK: Cell<bool> = Cell::new(true);
++
++/// The browser's main thread calls this with `false` before it starts anything else.
++#[unsafe(no_mangle)]
++pub extern "C" fn __horizon_std_set_can_block(can_block: bool) {
++    CAN_BLOCK.set(can_block);
++}
++
++pub fn can_block() -> bool {
++    CAN_BLOCK.get()
++}
++
++static LAST_NANOS: AtomicU64 = AtomicU64::new(0);
++
++/// Time since the Unix epoch. Each worker has its own `performance.timeOrigin`, so this never
++/// returns less than any thread saw before: `Instant` stays monotonic across threads.
++pub fn now() -> Duration {
++    let nanos = (unsafe { __horizon_web_now() } * 1_000_000.0) as u64;
++    let last = LAST_NANOS.fetch_max(nanos, Ordering::Relaxed);
++    Duration::from_nanos(nanos.max(last))
++}
++
++/// `futex_wait` for a thread that may not block: true once the value changed, false on timeout.
++pub fn spin_wait(futex: &Atomic<u32>, expected: u32, timeout: Option<Duration>) -> bool {
++    let deadline = timeout.map(|t| now().saturating_add(t));
++    loop {
++        if futex.load(Ordering::Relaxed) != expected {
++            return true;
++        }
++        if deadline.is_some_and(|d| now() >= d) {
++            return false;
++        }
++        crate::hint::spin_loop();
++    }
++}
++
++pub fn spin_sleep(dur: Duration) {
++    let deadline = now().saturating_add(dur);
++    while now() < deadline {
++        crate::hint::spin_loop();
++    }
++}
++
++pub fn spawn(packet: *mut u8) -> bool {
++    unsafe { __horizon_web_spawn(packet) == 0 }
++}
++
++pub fn parallelism() -> usize {
++    unsafe { __horizon_web_parallelism() as usize }
++}
++
++pub fn print(fd: u32, buf: &[u8]) {
++    unsafe { __horizon_web_print(fd, buf.as_ptr(), buf.len()) }
++}
++
++pub fn fetch(path: &[u8]) -> Option<Vec<u8>> {
++    let mut out = Vec::new();
++    let ok = unsafe { __horizon_web_fetch(path.as_ptr(), path.len(), (&raw mut out).cast()) };
++    ok.then_some(out)
++}
++
++pub fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
++    mutex.lock().unwrap_or_else(PoisonError::into_inner)
++}
++
++/// The environment: empty until the program sets it.
++pub static ENV: Mutex<BTreeMap<OsString, OsString>> = Mutex::new(BTreeMap::new());
++
++/// `std::env::args()`, after the program's name.
++pub static ARGS: Mutex<Vec<OsString>> = Mutex::new(Vec::new());
++
++/// Appends one command line argument (UTF-8).
++#[unsafe(no_mangle)]
++pub unsafe extern "C" fn __horizon_std_push_arg(ptr: *const u8, len: usize) {
++    let bytes = unsafe { crate::slice::from_raw_parts(ptr, len) };
++    lock(&ARGS).push(OsString::from(crate::string::String::from_utf8_lossy(bytes).into_owned()));
++}

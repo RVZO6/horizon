@@ -12423,6 +12423,10 @@ impl ApplicationHandler for Game<'_> {
         let attributes = winit::platform::wayland::WindowAttributesExtWayland::with_name(
             attributes, "horizon", "horizon",
         );
+        // The page lays the canvas out (web/www/index.html).
+        #[cfg(target_arch = "wasm32")]
+        let attributes =
+            winit::platform::web::WindowAttributesExtWebSys::with_append(attributes, true);
         let window = match event_loop.create_window(
             attributes
                 .with_inner_size(winit::dpi::LogicalSize::new(size[0], size[1]))
@@ -13396,8 +13400,8 @@ impl ApplicationHandler for Game<'_> {
                         window.request_redraw();
                     }
                     // Yield between polls even when disk I/O is slow.
-                    event_loop.set_control_flow(ControlFlow::WaitUntil(
-                        Instant::now() + Duration::from_millis(4),
+                    event_loop.set_control_flow(ControlFlow::wait_duration(
+                        Duration::from_millis(4),
                     ));
                 }
                 Err(error) => {
@@ -14848,6 +14852,10 @@ impl Loading {
         let attributes = winit::platform::wayland::WindowAttributesExtWayland::with_name(
             attributes, "horizon", "horizon",
         );
+        // The page lays the canvas out (web/www/index.html).
+        #[cfg(target_arch = "wasm32")]
+        let attributes =
+            winit::platform::web::WindowAttributesExtWebSys::with_append(attributes, true);
         let window = match event_loop.create_window(
             attributes
                 .with_inner_size(winit::dpi::LogicalSize::new(size[0], size[1]))
@@ -15119,6 +15127,13 @@ impl ApplicationHandler for App {
         if let App::Ready(game) = self {
             game.exiting(event_loop);
         }
+        #[cfg(target_arch = "wasm32")]
+        if let Some(error) = match self {
+            App::Ready(game) => &game.error,
+            App::Loading(loading) => &loading.error,
+        } {
+            log::error!("Horizon: {error}");
+        }
     }
 }
 
@@ -15155,6 +15170,15 @@ fn run_loading(
         error: None,
     };
     let mut app = App::Loading(Box::new(loading));
+    // The browser runs the loop from its own event loop once this returns; `App::exiting` reports
+    // the error.
+    #[cfg(target_arch = "wasm32")]
+    {
+        use winit::platform::web::EventLoopExtWebSys;
+        EventLoop::new()?.spawn_app(app);
+        return Ok(());
+    }
+    #[cfg(not(target_arch = "wasm32"))]
     EventLoop::new()?.run_app(&mut app)?;
     horizon_client::discord_presence::stop();
     match app {

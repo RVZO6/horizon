@@ -27,9 +27,13 @@ const CRUMBLING_BLEND: wgpu::BlendState = wgpu::BlendState {
 const TERRAIN_ATTRIBUTES: [wgpu::VertexAttribute; 5] =
     wgpu::vertex_attr_array![0=>Float32x3,1=>Uint16x2,2=>Uint16,4=>Uint8x2,3=>Unorm8x4];
 
-/// entity.wgsl after the OverlayTexture constants it reads.
+/// entity.wgsl after the OverlayTexture constants it reads. Its glint and overlay branches sample
+/// in non-uniform control flow, which WebGPU rejects unless told otherwise (the native backends
+/// never check); a directive must come before the constants.
 fn entity_shader() -> String {
-    crate::overlay::wgsl_constants() + include_str!("entity.wgsl")
+    "diagnostic(off, derivative_uniformity);\n".to_owned()
+        + &crate::overlay::wgsl_constants()
+        + include_str!("entity.wgsl")
 }
 
 #[cfg(test)]
@@ -781,7 +785,8 @@ fn instance_descriptor(backends: wgpu::Backends) -> wgpu::InstanceDescriptor {
 /// the renderer's start (#746). macOS has Metal only.
 fn backend_order(api: GraphicsApi, os: &str, wgpu_backend: bool) -> Vec<wgpu::Backends> {
     use wgpu::Backends;
-    if os == "macos" || wgpu_backend {
+    // The browser offers WebGPU alone.
+    if os == "macos" || wgpu_backend || cfg!(target_arch = "wasm32") {
         return vec![Backends::default()];
     }
     let windows = os == "windows";
@@ -865,15 +870,55 @@ fn surface_format(
     .or_else(|| formats.iter().copied().find(|f| !f.is_srgb()))
     .unwrap_or(default)
 }
+/// What an error scope caught. The browser answers only once the page's thread returns to it,
+/// never while it waits here: there the scope counts as clean, and what it caught is logged when
+/// the answer comes.
+pub(crate) fn scope_error(
+    scope: impl std::future::Future<Output = Option<wgpu::Error>> + 'static,
+) -> Option<wgpu::Error> {
+    #[cfg(not(target_arch = "wasm32"))]
+    return pollster::block_on(scope);
+    #[cfg(target_arch = "wasm32")]
+    {
+        wasm_bindgen_futures::spawn_local(async move {
+            if let Some(e) = scope.await {
+                log::error!("Horizon renderer: {e}");
+            }
+        });
+        None
+    }
+}
+#[cfg(target_arch = "wasm32")]
+thread_local! {
+    /// The device `open_web_device` opened, for the first `Renderer::new`.
+    static WEB_DEVICE: std::cell::RefCell<Option<Opened>> = const { std::cell::RefCell::new(None) };
+}
+/// Opens the browser's GPU device before the game starts. WebGPU answers through promises, which
+/// only settle once the page's thread returns to the browser: never inside the frame where the
+/// game waits for its renderer (`pollster::block_on`).
+#[cfg(target_arch = "wasm32")]
+pub async fn open_web_device() -> Result<()> {
+    let opened = open_device(None, true, GraphicsApi::Auto, 1).await?;
+    WEB_DEVICE.with(|device| *device.borrow_mut() = Some(opened));
+    Ok(())
+}
 /// Opens a device on the first of `backend_order`'s backends that gives one.
 /// Offscreen rendering needs no surface, so it can use a GPU the window's
 /// display cannot present from (a headless compositor).
 async fn open_device(
-    window: &Arc<Window>,
+    window: Option<&Arc<Window>>,
     offscreen: bool,
     api: GraphicsApi,
     layers: u32,
 ) -> Result<Opened> {
+    #[cfg(target_arch = "wasm32")]
+    if let Some(mut opened) = WEB_DEVICE.with(|device| device.borrow_mut().take()) {
+        check_layers(&opened.adapter.limits(), layers)?;
+        if let Some(window) = window.filter(|_| !offscreen) {
+            opened.surface = Some(opened.instance.create_surface(window.clone())?);
+        }
+        return Ok(opened);
+    }
     let order = backend_order(
         api.with_env(),
         std::env::consts::OS,
@@ -886,16 +931,15 @@ async fn open_device(
             log::warn!("Horizon renderer: trying {name} ({})", failures.join("; "));
         }
         let instance = wgpu::Instance::new(instance_descriptor(backends));
-        let surface = if offscreen {
-            None
-        } else {
-            match instance.create_surface(window.clone()) {
+        let surface = match window.filter(|_| !offscreen) {
+            None => None,
+            Some(window) => match instance.create_surface(window.clone()) {
                 Ok(surface) => Some(surface),
                 Err(e) => {
                     failures.push(format!("{name} surface: {e}"));
                     continue;
                 }
-            }
+            },
         };
         let adapter = match instance
             .request_adapter(&wgpu::RequestAdapterOptions {
@@ -949,12 +993,12 @@ async fn open_device(
             required_limits: limits,
             ..Default::default()
         };
-        #[cfg(not(target_os = "macos"))]
+        #[cfg(not(any(target_os = "macos", target_arch = "wasm32")))]
         let opened = match info.backend {
             wgpu::Backend::Vulkan => horizon_hdr::open_vulkan_device(&adapter, &desc),
             _ => None,
         };
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", target_arch = "wasm32"))]
         let opened = None;
         let opened = match opened {
             Some(opened) => opened,
@@ -1090,7 +1134,7 @@ impl Renderer {
                     queue: renderer.queue.clone(),
                 }
             }
-            None => open_device(&window, offscreen, api, layers).await?,
+            None => open_device(Some(&window), offscreen, api, layers).await?,
         };
         let info = adapter.get_info();
         crate::graphics::suggest_reduced_far_detail(crate::graphics::lod_capped(&info));

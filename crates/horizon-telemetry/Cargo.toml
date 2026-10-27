@@ -14,7 +14,7 @@ ruzstd = "0.9"
 # The random install ID and outbox file names.
 getrandom = "0.3"
 # Sending, for the launcher (and the game's "I'm playing" ping); the ingest server builds without it.
-ureq = { version = "2", default-features = false, features = ["tls"], optional = true }
+ureq = { version = "2", default-features = false, optional = true }
 
 [features]
 default = ["upload", "live"]
@@ -28,3 +28,7 @@ required-features = ["upload"]
 
 [lints]
 workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# HTTPS; a browser has no sockets for it.
+ureq = { version = "2", default-features = false, features = ["tls"], optional = true }

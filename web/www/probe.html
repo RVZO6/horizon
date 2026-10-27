@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Horizon web probe</title>
+</head>
+<body>
+<pre id="out">running…</pre>
+<script type="module">
+import { start } from './threads.js';
+const out = document.getElementById('out');
+try {
+    const horizon = await start({ pool: 8, files: true });
+    horizon.horizon_web_chdir('/home/web/probe-home');
+    out.textContent = horizon.web_probe();
+} catch (e) {
+    out.textContent = `failed: ${e}\n${e.stack ?? ''}`;
+    console.error(e);
+}
+</script>
+</body>
+</html>

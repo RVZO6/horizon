@@ -1,3 +1,6 @@
+// The glint branch samples in non-uniform control flow (one draw mixes glint and plain quads);
+// WebGPU rejects that unless told otherwise, as the native backends never check.
+diagnostic(off, derivative_uniformity);
 struct Hud {
     size: vec4<f32>,
     // Blend::EndPortal: atlas rects (u0, v0, width, height) of end_sky.png and

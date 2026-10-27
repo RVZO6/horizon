@@ -98,6 +98,28 @@ pub fn helper_clipboard_contents(clipboard: &str) -> String {
     strip_formatting(&clipboard.replace('\r', ""))
 }
 
+/// A browser lends its clipboard only to a promise after a user gesture: there, the game keeps the
+/// text it copied (`SystemClipboard::copied`).
+#[cfg(target_arch = "wasm32")]
+mod arboard {
+    pub struct Clipboard;
+    pub enum Error {
+        ContentNotAvailable,
+        Unavailable,
+    }
+    impl Clipboard {
+        pub fn new() -> Result<Self, Error> {
+            Err(Error::Unavailable)
+        }
+        pub fn get_text(&mut self) -> Result<String, Error> {
+            Err(Error::ContentNotAvailable)
+        }
+        pub fn set_text(&mut self, _text: String) -> Result<(), Error> {
+            Err(Error::Unavailable)
+        }
+    }
+}
+
 /// A clipboard: the system's, or an in-memory one in tests.
 pub trait Clipboard {
     /// `KeyboardHandler.getClipboard`: empty when there is no text.

@@ -198,7 +198,7 @@ impl NativePost {
                 multiview_mask: None,
                 cache: None,
             });
-            if let Some(e) = pollster::block_on(scope.pop()) {
+            if let Some(e) = super::scope_error(scope.pop()) {
                 return Err(format!("{}: {e}", stage.file));
             }
             passes.push((stage.label, pipeline));

@@ -437,6 +437,12 @@ fn open(path: &std::path::Path) -> io::Result<Box<dyn Pipe>> {
     Ok(Box::new(pipe))
 }
 
+/// A page can't reach the Discord app.
+#[cfg(target_arch = "wasm32")]
+fn open(_path: &std::path::Path) -> io::Result<Box<dyn Pipe>> {
+    Err(io::ErrorKind::Unsupported.into())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -55,15 +55,26 @@ horizon-theme = { path = "../horizon-theme" }
 # the anonymous "I'm playing" ping the game sends itself (`heartbeat.rs`).
 horizon-telemetry = { path = "../horizon-telemetry", default-features = false, features = ["live"] }
 horizon-bench = { path = "../horizon-bench" }
-arboard = { version = "3.6.1", default-features = false, features = ["wayland-data-control"] }
 zip = { version = "2", default-features = false, features = ["deflate"] }
 # Controllers (evdev + libudev on Linux, IOKit on macOS, Windows.Gaming.Input); the `controllers` feature.
 gilrs = { version = "0.11", optional = true }
 # The DualSense's rumble, adaptive triggers and lights over HID (gilrs only reads it).
 horizon-dualsense = { path = "../horizon-dualsense", optional = true }
 # HTTPS to the Minecraft services (online-mode session join).
-ureq = { version = "2", default-features = false, features = ["tls"] }
+ureq = { version = "2", default-features = false }
 unicode-bidi = "0.3.18"
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+arboard = { version = "3.6.1", default-features = false, features = ["wayland-data-control"] }
+# HTTPS to the Minecraft services; a browser has no sockets for it.
+ureq = { version = "2", default-features = false, features = ["tls"] }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+# The browser build (web/README.md): std's hooks, the page's entry point and WebGPU.
+horizon-web = { path = "../horizon-web" }
+wasm-bindgen = "0.2.129"
+wasm-bindgen-futures = "0.4.79"
+wgpu = { version = "30.0.1", default-features = false, features = ["webgpu"] }
 
 [target.'cfg(unix)'.dependencies]
 # The server thread's CPU time per tick (`HORIZON_SPIKES`, spans.rs).

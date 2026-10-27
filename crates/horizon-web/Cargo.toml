@@ -1,0 +1,18 @@
+[package]
+name = "horizon-web"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "The browser build's platform layer: the hooks of web/std (threads on Web Workers, the clock, the console, files fetched on demand) and the page's entry points. Empty on other targets"
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-bindgen = "0.2.129"
+js-sys = "0.3.106"
+# Randomness from crypto.getRandomValues for the crates that ask getrandom (0.3 also needs
+# `--cfg getrandom_backend="wasm_js"`, web/build.sh).
+getrandom02 = { package = "getrandom", version = "0.2.17", features = ["js"] }
+getrandom03 = { package = "getrandom", version = "0.3.4", features = ["wasm_js"] }
+
+[lints]
+workspace = true
