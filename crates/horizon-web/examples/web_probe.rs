@@ -47,10 +47,16 @@ mod probe {
         let mut w = OpenOptions::new().write(true).open("semantics.txt")?;
         w.seek(SeekFrom::Start(12))?;
         w.write_all(b"x")?;
-        if std::fs::metadata("semantics.txt")?.len() != 13 || std::fs::read("semantics.txt")?[10..] != *b"\0\0x" {
+        if std::fs::metadata("semantics.txt")?.len() != 13
+            || std::fs::read("semantics.txt")?[10..] != *b"\0\0x"
+        {
             failed.push("write past the end");
         }
-        Ok(if failed.is_empty() { "ok".into() } else { failed.join(", ") })
+        Ok(if failed.is_empty() {
+            "ok".into()
+        } else {
+            failed.join(", ")
+        })
     }
 
     #[wasm_bindgen]
