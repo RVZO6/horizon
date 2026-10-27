@@ -202,6 +202,14 @@ pub fn horizon_worker_main() {
 #[wasm_bindgen]
 pub fn horizon_web_main_thread() {
     unsafe { __horizon_std_set_can_block(false) };
+    // `std::env::current_exe` names this file (web/std): it exists, as a native executable
+    // does, so what keys a cache to the running build (the resolved block behaviours'
+    // snapshot) has a length and a modification time to read.
+    let exe = std::env::current_exe().expect("web/std names the program");
+    if let Some(dir) = exe.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    let _ = std::fs::write(&exe, env!("CARGO_PKG_VERSION"));
 }
 
 /// Registers the files under `fs/` that the game reads on demand: one `size<TAB>path` per line.
