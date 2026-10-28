@@ -52,7 +52,7 @@ impl Game<'_> {
     /// reach, and how far along the view it is.
     pub(super) fn redirectable_hit(&self) -> Option<(usize, f64)> {
         let eye = self.eye_position()?;
-        let dir = view_vector(self.yaw, self.pitch);
+        let dir = self.aim_vector();
         let reach: f64 = if self.creative { 5.0 } else { 3.0 };
         self.creatures
             .projectiles

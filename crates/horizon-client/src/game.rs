@@ -192,6 +192,7 @@ mod text_displays;
 mod titles;
 mod tnt;
 mod totem;
+mod touch;
 mod trading;
 mod trial_spawner;
 mod trial_visuals;
@@ -1581,6 +1582,8 @@ struct Game<'a> {
     /// The browser's frame pacing (`frame_due`).
     #[cfg(target_arch = "wasm32")]
     asked_frames: horizon_client::window::AskedFrames,
+    /// Touch input (`game/touch.rs`).
+    touch: touch::TouchState,
     /// The next frame asked for is drawn whatever the frame rate cap (`frame_due`).
     #[cfg(target_arch = "wasm32")]
     draw_now: bool,
@@ -2106,7 +2109,7 @@ impl Game<'_> {
             });
         }
         let origin = self.eye_position()?;
-        self.clip_ray(origin, view_vector(self.yaw, self.pitch), self.reach())
+        self.clip_ray(origin, self.aim_vector(), self.reach())
     }
     /// The first block outline hit within `reach` along the unit `dir`.
     fn clip_ray(&self, origin: [f64; 3], dir: [f64; 3], reach: f64) -> Option<Hit> {
@@ -5003,7 +5006,7 @@ impl Game<'_> {
         self.tick_mods();
         self.tick_server_mods();
         let camera_eye = self.camera_eye_height();
-        let stick = self.pad_move();
+        let stick = self.pad_move().or_else(|| self.touch_move());
         if self.riding.is_some() && self.player.is_some() {
             let playing = self.screen == Screen::Playing;
             let held = |k| playing && self.keys.contains(&k);
@@ -5899,6 +5902,7 @@ impl Game<'_> {
             if self.camera_type.first_person()
                 && (!spectator || self.spectator_crosshair())
                 && !self.debug_crosshair()
+                && !self.touch.active
             {
                 let attack = (indicator == 1).then_some(strength);
                 let full = attack.is_some_and(|a| {
@@ -6075,6 +6079,9 @@ impl Game<'_> {
         {
             let tw = HudBatch::text_width(atlas, text);
             batch.text(atlas, text, (w - tw) / 2.0, h - 59.0, u32::MAX, true);
+        }
+        if show_hud && self.screen == Screen::Playing {
+            self.draw_touch_controls(&mut batch);
         }
         self.draw_chat(&mut batch);
         self.draw_tab_list(&mut batch);
@@ -8323,7 +8330,7 @@ impl Game<'_> {
     }
     fn mob_hit(&self) -> Option<(usize, f64)> {
         let eye = self.eye_position()?;
-        let dir = view_vector(self.yaw, self.pitch);
+        let dir = self.aim_vector();
         let reach: f64 = if self.creative { 5.0 } else { 3.0 };
         let mut best: Option<(usize, f64)> = None;
         for (i, m) in self.mobs.iter().enumerate() {
@@ -9479,7 +9486,7 @@ impl Game<'_> {
     /// Voxel traversal that also stops at fluid source blocks (bucket pick).
     fn pick_fluid(&self) -> Option<Hit> {
         let origin = self.eye_position()?;
-        let dir = view_vector(self.yaw, self.pitch);
+        let dir = self.aim_vector();
         let mut t = 0.0;
         let mut last = origin.map(|v| v.floor() as i32);
         while t <= self.reach() {
@@ -13314,6 +13321,7 @@ impl ApplicationHandler for Game<'_> {
                     self.extras_retry()?;
                     self.apply_mouse_look();
                     self.pad_look(elapsed.as_secs_f32());
+                    self.touch_frame();
                     self.advance_flight();
                     let ticked = Instant::now();
                     let rendered = self.render()?;
@@ -13726,6 +13734,7 @@ impl<'a> Game<'a> {
             limiter: horizon_client::window::FramerateLimiter::new(0),
             #[cfg(target_arch = "wasm32")]
             asked_frames: Default::default(),
+            touch: Default::default(),
             #[cfg(target_arch = "wasm32")]
             draw_now: false,
             frame_clock: Default::default(),
@@ -14912,6 +14921,8 @@ struct Loading {
     shown: bool,
     menu: startup_menu::StartupMenu,
     error: Option<Box<dyn std::error::Error>>,
+    /// The finger that is the mouse (`game/touch.rs`).
+    touch_finger: Option<u64>,
 }
 impl Loading {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
@@ -15159,8 +15170,23 @@ impl ApplicationHandler for App {
     }
     fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
         match self {
-            App::Loading(loading) => loading.window_event(event_loop, id, event),
+            App::Loading(loading) => match event {
+                WindowEvent::Touch(touch) => {
+                    for event in touch::touch_as_mouse(&mut loading.touch_finger, &touch) {
+                        loading.window_event(event_loop, id, event);
+                    }
+                }
+                event => loading.window_event(event_loop, id, event),
+            },
             App::Ready(game) => {
+                if let WindowEvent::Touch(touch) = event {
+                    game.touch_event(event_loop, id, touch);
+                    return;
+                }
+                // A real mouse takes over: the crosshair comes back.
+                if matches!(event, WindowEvent::MouseInput { .. }) {
+                    game.touch.active = false;
+                }
                 #[cfg(target_arch = "wasm32")]
                 let resized = matches!(event, WindowEvent::Resized(_));
                 game.window_event(event_loop, id, event);
@@ -15281,6 +15307,7 @@ fn run_loading(
         shown: false,
         menu,
         error: None,
+        touch_finger: None,
     };
     let app = App::Loading(Box::new(loading));
     // The browser runs the loop from its own event loop once this returns; `App::exiting` reports

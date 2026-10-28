@@ -194,6 +194,13 @@ fn use_duration(components: &Components) -> i32 {
 }
 
 impl Game<'_> {
+    /// The held item is used by holding the use button (`getUseDuration` above 0).
+    pub(super) fn held_item_is_used_over_time(&self) -> bool {
+        self.held().is_some_and(|stack| {
+            let view = item_render::stack_view(stack);
+            use_duration(&self.pack.item_renderer.models.components(&view)) > 0
+        })
+    }
     pub(super) fn item_env(&self) -> Env<'_, '_> {
         Env { game: self }
     }

@@ -87,13 +87,15 @@ const args = ['--resources', '/res', ...new URLSearchParams(location.search).get
 for (const arg of args) horizon.horizon_web_arg(arg);
 await horizon.horizon_run();
 // Pointer lock needs a click, as vanilla grabs the mouse on one; raw movement where offered.
+// A finger plays without it (touch.rs): only a mouse's press asks.
 addEventListener(
-    'mousedown',
-    () => {
+    'pointerdown',
+    (event) => {
         const canvas = document.querySelector('canvas:not(.horizon-overlay)');
-        if (!canvas || document.pointerLockElement === canvas || !horizon.horizon_web_wants_pointer_lock()) return;
+        if (event.pointerType !== 'mouse' || !canvas || document.pointerLockElement === canvas) return;
+        if (!horizon.horizon_web_wants_pointer_lock()) return;
         const raw = canvas.requestPointerLock({ unadjustedMovement: true });
-        raw?.catch?.(() => canvas.requestPointerLock());
+        raw?.catch?.(() => canvas.requestPointerLock()?.catch?.(() => {}));
     },
     true,
 );

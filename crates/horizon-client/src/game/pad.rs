@@ -202,7 +202,7 @@ impl Game<'_> {
 
     /// A bound action: a vanilla mapping acts as its default key or mouse
     /// button, like a rebound keyboard key.
-    fn pad_action(&mut self, action: &str, down: bool) -> Result<()> {
+    pub(super) fn pad_action(&mut self, action: &str, down: bool) -> Result<()> {
         match action {
             gamepad::HOTBAR_PREVIOUS | gamepad::HOTBAR_NEXT => {
                 if down && self.screen == Screen::Playing {

@@ -715,6 +715,7 @@ mod tests {
             shown: false,
             menu: StartupMenu::default(),
             error: None,
+            touch_finger: None,
         }
     }
 
