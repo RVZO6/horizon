@@ -10,8 +10,9 @@
   html, body { margin: 0; height: 100%; overflow: hidden; background: rgb(239, 50, 61); }
   /* winit sizes the canvas inline; the page decides. */
   /* touch-action: fingers reach the game (touch.rs), not the page's scrolling and zoom. */
-  canvas { display: block; width: 100vw !important; height: 100vh !important; outline: none;
-    touch-action: none; }
+  canvas { display: block; width: 100vw !important; height: 100vh !important;
+    /* Mobile browser toolbars reduce the visible viewport. Let winit resize with it. */
+    height: 100dvh !important; outline: none; touch-action: none; }
   /* Vanilla's Mojang Studios screen (overlay.js) over the game's canvas. */
   canvas.horizon-overlay { position: fixed; inset: 0; z-index: 1; pointer-events: none; }
   /* Once the overlay is gone, nothing red behind the game's canvas. */

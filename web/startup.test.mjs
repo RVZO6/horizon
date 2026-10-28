@@ -1,5 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { requireBrowserFeatures, showFailure } from './www/startup.js';
 
 const supported = () => ({
@@ -59,4 +60,9 @@ test('failure details are visible as text and duplicate failures do not add more
         if (original === undefined) delete globalThis.document;
         else globalThis.document = original;
     }
+});
+
+test('game canvas follows the visible mobile viewport', () => {
+    const page = readFileSync(new URL('./www/index.html', import.meta.url), 'utf8');
+    assert.match(page, /height:\s*100vh\s*!important;[\s\S]*?height:\s*100dvh\s*!important/);
 });
