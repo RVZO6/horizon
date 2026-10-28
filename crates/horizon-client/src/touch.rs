@@ -23,6 +23,8 @@ pub enum Control {
     Right,
     ForwardLeft,
     ForwardRight,
+    BackLeft,
+    BackRight,
     /// The D-pad's centre: a tap toggles sneaking.
     Sneak,
     Jump,
@@ -60,15 +62,18 @@ pub enum Event {
     Release,
 }
 
-/// Where the controls are, for a GUI of `width` by `height`.
+/// Where the controls are, for a GUI of `width` by `height`: the geometry of TouchController's
+/// `new` texture set (Bedrock's current buttons), 22 pixel textures drawn at twice their size.
 #[derive(Clone, Copy, Debug)]
 pub struct Layout {
     pub width: f32,
     pub height: f32,
     /// Flying or swimming: ascend and descend replace jump.
     pub ascend: bool,
-    /// The forward diagonals show while the D-pad's top half is held.
-    pub diagonals: bool,
+    /// The forward diagonals show while forward, left or right is held.
+    pub forward_diagonals: bool,
+    /// The backward ones while back, left or right is.
+    pub backward_diagonals: bool,
 }
 
 type Rect = [f32; 4];
@@ -77,32 +82,43 @@ fn inside(r: Rect, [x, y]: [f32; 2]) -> bool {
     x >= r[0] && y >= r[1] && x < r[0] + r[2] && y < r[1] + r[3]
 }
 
+/// A D-pad button; its neighbours overlap it by 2 (the `new` set's padding of -1).
+const BUTTON: f32 = 44.0;
+const STEP: f32 = BUTTON - 2.0;
+
 impl Layout {
+    /// The D-pad's top left: 12 from the left, 16 from the bottom, 3 buttons square.
     fn dpad(&self) -> [f32; 2] {
-        [12.0, self.height - 164.0]
+        [12.0, self.height - 16.0 - (2.0 * STEP + BUTTON)]
     }
 
-    /// The controls shown, with where each is drawn.
+    /// The controls shown, with where each is drawn and touched.
     pub fn controls(&self) -> Vec<(Control, Rect)> {
         let [dx, dy] = self.dpad();
-        let at = |x: f32, y: f32, size: f32| [dx + x, dy + y, size, size];
+        let cell = |i: f32, j: f32| [dx + i * STEP, dy + j * STEP, BUTTON, BUTTON];
         let (w, h) = (self.width, self.height);
         let mut controls = vec![
-            (Control::Forward, at(52.0, 0.0, 44.0)),
-            (Control::Left, at(0.0, 52.0, 44.0)),
-            (Control::Right, at(104.0, 52.0, 44.0)),
-            (Control::Back, at(52.0, 104.0, 44.0)),
-            (Control::Sneak, at(52.0, 52.0, 44.0)),
+            (Control::Forward, cell(1.0, 0.0)),
+            (Control::Left, cell(0.0, 1.0)),
+            (Control::Right, cell(2.0, 1.0)),
+            (Control::Back, cell(1.0, 2.0)),
+            (Control::Sneak, cell(1.0, 1.0)),
         ];
-        if self.diagonals {
-            controls.push((Control::ForwardLeft, at(8.0, 8.0, 36.0)));
-            controls.push((Control::ForwardRight, at(104.0, 8.0, 36.0)));
+        if self.forward_diagonals {
+            controls.push((Control::ForwardLeft, cell(0.0, 0.0)));
+            controls.push((Control::ForwardRight, cell(2.0, 0.0)));
         }
+        if self.backward_diagonals {
+            controls.push((Control::BackLeft, cell(0.0, 2.0)));
+            controls.push((Control::BackRight, cell(2.0, 2.0)));
+        }
+        // 42 from the right; 68 from the bottom, descend 18.
+        let right = w - 42.0 - BUTTON;
         if self.ascend {
-            controls.push((Control::Ascend, [w - 78.0, h - 104.0, 36.0, 36.0]));
-            controls.push((Control::Descend, [w - 78.0, h - 54.0, 36.0, 36.0]));
+            controls.push((Control::Ascend, [right, h - 68.0 - BUTTON, BUTTON, BUTTON]));
+            controls.push((Control::Descend, [right, h - 18.0 - BUTTON, BUTTON, BUTTON]));
         } else {
-            controls.push((Control::Jump, [w - 78.0, h - 104.0, 36.0, 36.0]));
+            controls.push((Control::Jump, [right, h - 68.0 - BUTTON, BUTTON, BUTTON]));
         }
         controls.push((Control::Chat, [(w / 2.0).floor() - 18.0, 0.0, 18.0, 18.0]));
         controls.push((Control::Pause, [(w / 2.0).floor(), 0.0, 18.0, 18.0]));
@@ -113,25 +129,10 @@ impl Layout {
         controls
     }
 
-    /// Where a touch counts: the D-pad's arms reach into the gaps between them.
-    fn hit_rect(&self, control: Control, drawn: Rect) -> Rect {
-        let [dx, dy] = self.dpad();
-        let at = |x: f32, y: f32, w: f32, h: f32| [dx + x, dy + y, w, h];
-        match control {
-            Control::Forward => at(52.0, 0.0, 44.0, 52.0),
-            Control::Left => at(0.0, 52.0, 52.0, 44.0),
-            Control::Right => at(96.0, 52.0, 52.0, 44.0),
-            Control::Back => at(52.0, 96.0, 44.0, 52.0),
-            Control::ForwardLeft => at(0.0, 0.0, 52.0, 52.0),
-            Control::ForwardRight => at(96.0, 0.0, 52.0, 52.0),
-            _ => drawn,
-        }
-    }
-
     pub fn control_at(&self, at: [f32; 2]) -> Option<Control> {
         self.controls()
             .into_iter()
-            .find(|&(c, r)| inside(self.hit_rect(c, r), at))
+            .find(|&(_, r)| inside(r, at))
             .map(|(c, _)| c)
     }
 
@@ -184,7 +185,8 @@ pub struct TouchControls {
     fingers: Vec<Finger>,
     /// Degrees to turn since the last `take_look`: yaw, pitch.
     look: [f32; 2],
-    diagonals: bool,
+    forward_diagonals: bool,
+    backward_diagonals: bool,
     ascend: bool,
 }
 
@@ -194,7 +196,8 @@ impl TouchControls {
             width,
             height,
             ascend: self.ascend,
-            diagonals: self.diagonals,
+            forward_diagonals: self.forward_diagonals,
+            backward_diagonals: self.backward_diagonals,
         }
     }
 
@@ -328,7 +331,8 @@ impl TouchControls {
             )
         });
         self.fingers.clear();
-        self.diagonals = false;
+        self.forward_diagonals = false;
+        self.backward_diagonals = false;
         self.look = [0.0; 2];
         if holding {
             vec![Event::Release]
@@ -366,6 +370,8 @@ impl TouchControls {
                 Control::Right => [-1.0, 0.0],
                 Control::ForwardLeft => [1.0, 1.0],
                 Control::ForwardRight => [-1.0, 1.0],
+                Control::BackLeft => [1.0, -1.0],
+                Control::BackRight => [-1.0, -1.0],
                 _ => continue,
             };
             v = [v[0] + l, v[1] + f];
@@ -390,20 +396,12 @@ impl TouchControls {
     }
 
     fn update_diagonals(&mut self, layout: &Layout) {
-        let layout = Layout {
-            diagonals: self.diagonals,
-            ..*layout
-        };
-        self.diagonals = self.held(&layout).iter().any(|c| {
-            matches!(
-                c,
-                Control::Forward
-                    | Control::ForwardLeft
-                    | Control::ForwardRight
-                    | Control::Left
-                    | Control::Right
-            )
-        });
+        let layout = self.layout(layout.width, layout.height);
+        let held = self.held(&layout);
+        let any = |controls: &[Control]| held.iter().any(|c| controls.contains(c));
+        use Control::*;
+        self.forward_diagonals = any(&[Forward, ForwardLeft, ForwardRight, Left, Right]);
+        self.backward_diagonals = any(&[Back, BackLeft, BackRight, Left, Right]);
     }
 }
 
@@ -433,6 +431,11 @@ mod tests {
 
     fn layout(touch: &TouchControls) -> Layout {
         touch.layout(W, H)
+    }
+
+    /// The middle of the D-pad's cell `i`, `j` (the centre is 1, 1).
+    fn cell(i: f32, j: f32) -> [f32; 2] {
+        [12.0 + i * 42.0 + 22.0, H - 144.0 + j * 42.0 + 22.0]
     }
 
     #[test]
@@ -494,32 +497,44 @@ mod tests {
         let mut t = TouchControls::default();
         let l = layout(&t);
         // The forward arm, at the D-pad's top centre.
-        t.down(&l, 1, [12.0 + 74.0, H - 164.0 + 20.0], 0.0);
+        t.down(&l, 1, cell(1.0, 0.0), 0.0);
         let l = layout(&t);
-        assert!(l.diagonals);
+        assert!(l.forward_diagonals && !l.backward_diagonals);
         assert_eq!(t.move_vector(&l), Some([0.0, 1.0]));
         // Slide onto the forward-left diagonal.
-        t.moved(&l, 1, [12.0 + 20.0, H - 164.0 + 20.0]);
+        t.moved(&l, 1, cell(0.0, 0.0));
         assert_eq!(t.move_vector(&layout(&t)), Some([1.0, 1.0]));
         // A world finger at the same time looks.
         t.down(&l, 2, [300.0, 100.0], 0.0);
         assert_eq!(t.aim(), Some([300.0, 100.0]));
         t.up(&l, 1, 0.5, false);
         assert_eq!(t.move_vector(&layout(&t)), None);
-        assert!(!layout(&t).diagonals);
+        assert!(!layout(&t).forward_diagonals);
+    }
+
+    #[test]
+    fn back_shows_the_backward_diagonals() {
+        let mut t = TouchControls::default();
+        let l = layout(&t);
+        t.down(&l, 1, cell(1.0, 2.0), 0.0);
+        let l = layout(&t);
+        assert!(l.backward_diagonals && !l.forward_diagonals);
+        t.moved(&l, 1, cell(2.0, 2.0));
+        assert_eq!(t.move_vector(&layout(&t)), Some([-1.0, -1.0]));
     }
 
     #[test]
     fn the_diagonals_are_world_until_shown() {
         let t = TouchControls::default();
-        assert_eq!(layout(&t).control_at([12.0 + 20.0, H - 164.0 + 20.0]), None);
+        assert_eq!(layout(&t).control_at(cell(0.0, 0.0)), None);
+        assert_eq!(layout(&t).control_at(cell(2.0, 2.0)), None);
     }
 
     #[test]
     fn buttons() {
         let mut t = TouchControls::default();
         let l = layout(&t);
-        let centre = [12.0 + 74.0, H - 164.0 + 74.0];
+        let centre = cell(1.0, 1.0);
         assert_eq!(
             t.down(&l, 1, centre, 0.0),
             vec![Event::Press(Control::Sneak)]

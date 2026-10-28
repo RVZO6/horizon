@@ -278,9 +278,24 @@ impl Game<'_> {
         let layout = self.touch.controls.layout(batch.width, batch.height);
         let held = self.touch.controls.held(&layout);
         let sneaking = self.keys.contains(&KeyCode::ShiftLeft);
+        let swimming = self
+            .player
+            .as_ref()
+            .is_some_and(|p| !p.flying && p.fluids.was_touching_water);
         for (control, [x, y, w, h]) in layout.controls() {
             let pressed = held.contains(&control) || (control == Control::Sneak && sneaking);
-            // Bedrock's classic buttons, drawn at 60% opacity and greyed while pressed.
+            // TouchController's `new` textures (tools/touch_textures.py) at 60% opacity, their
+            // active ones while pressed.
+            let sprite = format!(
+                "gui/sprites/touch/{}{}",
+                texture(control, swimming),
+                if pressed { "_active" } else { "" }
+            );
+            if atlas.sprites.contains_key(&sprite) {
+                batch.sprite_scaled(atlas, &sprite, x, y, w, h, 0x99_FFFFFF);
+                continue;
+            }
+            // Without them, plain buttons greyed while pressed.
             let (edge, face, icon) = if pressed {
                 (0x99_2A2A2A, 0x99_6B6B6B, 0xCC_1E1E1E)
             } else {
@@ -310,6 +325,18 @@ impl Game<'_> {
                     tri(
                         batch,
                         [[cx - r, cy - r], [cx + r, cy - r], [cx - r, cy + r]],
+                    );
+                }
+                Control::BackLeft => {
+                    tri(
+                        batch,
+                        [[cx - r, cy + r], [cx - r, cy - r], [cx + r, cy + r]],
+                    );
+                }
+                Control::BackRight => {
+                    tri(
+                        batch,
+                        [[cx + r, cy + r], [cx - r, cy + r], [cx + r, cy - r]],
                     );
                 }
                 Control::ForwardRight => {
@@ -368,5 +395,28 @@ impl Game<'_> {
             }
             batch.blend_since(start, Blend::Invert);
         }
+    }
+}
+
+/// The control's texture in TouchController's `new` set.
+fn texture(control: Control, swimming: bool) -> &'static str {
+    match control {
+        Control::Forward => "dpad/up",
+        Control::Back => "dpad/down",
+        Control::Left => "dpad/left",
+        Control::Right => "dpad/right",
+        Control::ForwardLeft => "dpad/up_left",
+        Control::ForwardRight => "dpad/up_right",
+        Control::BackLeft => "dpad/down_left",
+        Control::BackRight => "dpad/down_right",
+        Control::Sneak => "sneak/sneak",
+        Control::Jump => "jump/jump",
+        Control::Ascend if swimming => "ascend/ascend_swimming",
+        Control::Ascend => "ascend/ascend",
+        Control::Descend if swimming => "descend/descend_swimming",
+        Control::Descend => "descend/descend",
+        Control::Chat => "chat/chat",
+        Control::Pause => "pause/pause",
+        Control::Inventory => "inventory/inventory",
     }
 }

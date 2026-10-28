@@ -65,6 +65,9 @@ if [[ $what == probe && -d $root/.local/horizon-client/26.3 ]]; then
     python3 "$here/bundle.py" --resources "$root/.local/horizon-client/26.3" --out "$dist/fs" --index-only
 fi
 if [[ $what == game && -d $root/.local/horizon-client/26.3 ]]; then
+    # The touch buttons' textures, fetched rather than committed; without them plain buttons draw.
+    python3 "$root/tools/touch_textures.py" --resources "$root/.local/horizon-client/26.3" ||
+        echo "Touch textures unavailable: the touch controls draw plain buttons" >&2
     python3 "$here/bundle.py" --resources "$root/.local/horizon-client/26.3" --out "$dist/fs"
     # The loading bar's totals: the bytes the page receives once decompressed.
     printf '{"wasm": %d, "startup": %d}\n' "$(wc -c < "$dist/horizon_bg.wasm")" \
