@@ -5611,10 +5611,15 @@ impl Game<'_> {
             // so everywhere else warp after grabbing.
             #[cfg(target_os = "macos")]
             warp(window);
-            self.captured = window
-                .set_cursor_grab(CursorGrabMode::Locked)
-                .or_else(|_| window.set_cursor_grab(CursorGrabMode::Confined))
-                .is_ok();
+            // On the web, only main.js may request a lock, after a mouse press. Calling
+            // winit here can request one during a touch gesture, locking mobile input.
+            #[cfg(not(target_arch = "wasm32"))]
+            {
+                self.captured = window
+                    .set_cursor_grab(CursorGrabMode::Locked)
+                    .or_else(|_| window.set_cursor_grab(CursorGrabMode::Confined))
+                    .is_ok();
+            }
             // The browser locks the pointer later, and only after a click: captured once it
             // has (`follow_pointer_lock`).
             #[cfg(target_arch = "wasm32")]

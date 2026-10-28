@@ -1,6 +1,6 @@
 //! Touch input: in a menu the first finger is the mouse; in play the touch controls
 //! (`horizon_client::touch`) drive the player through the gamepad's actions.
-use super::{Game, view_vector};
+use super::{Game, Screen, view_vector};
 use horizon_client::{
     hud::{Blend, HudBatch},
     touch::{self, Control, Event, Layout, RING_RADIUS, TouchControls},
@@ -41,6 +41,11 @@ pub(super) fn touch_as_mouse(finger: &mut Option<u64>, touch: &Touch) -> Vec<Win
     }
 }
 
+/// An outside tap dismisses only an empty-handed inventory, not a creative tab.
+fn dismiss_inventory(outside: bool, on_creative_tab: bool, carrying: bool) -> bool {
+    outside && !on_creative_tab && !carrying
+}
+
 /// A tap's target stays aimed at this long after the finger lifts: the attack it starts
 /// happens on the next tick.
 const TAP_AIM_SECONDS: f64 = 0.15;
@@ -52,6 +57,8 @@ pub(super) struct TouchState {
     pub(super) active: bool,
     /// The finger that is the mouse in a menu.
     menu_finger: Option<u64>,
+    /// A finger that dismissed the inventory; consume its remaining events.
+    dismiss_finger: Option<u64>,
     /// What the hold pressed, until the finger lifts.
     holding: Option<MouseButton>,
     jump: bool,
@@ -63,6 +70,51 @@ pub(super) struct TouchState {
 impl Game<'_> {
     pub(super) fn touch_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, t: Touch) {
         self.touch.active = true;
+        if let Some(finger) = self.touch.dismiss_finger {
+            if finger == t.id && matches!(t.phase, TouchPhase::Ended | TouchPhase::Cancelled) {
+                self.touch.dismiss_finger = None;
+            }
+            return;
+        }
+        if self.touch.menu_finger.is_none()
+            && t.phase == TouchPhase::Started
+            && matches!(self.screen, Screen::Inventory | Screen::Creative)
+        {
+            // Update the cursor first: recipe-book hit testing uses it.
+            self.window_event(
+                event_loop,
+                id,
+                WindowEvent::CursorMoved {
+                    device_id: DeviceId::dummy(),
+                    position: t.location,
+                },
+            );
+            if let Some(batch) = self.gui_scale() {
+                let on_creative_tab = self.screen == Screen::Creative && {
+                    let (ox, oy) = Self::creative_origin(&batch);
+                    self.creative_screen.tabs.iter().any(|tab| {
+                        let (x, y) = horizon_client::creative::Creative::tab_position(tab);
+                        self.cursor.0 >= ox + x
+                            && self.cursor.0 < ox + x + 26.0
+                            && self.cursor.1 >= oy + y
+                            && self.cursor.1 < oy + y + 32.0
+                    })
+                };
+                if dismiss_inventory(
+                    self.clicked_outside(&batch),
+                    on_creative_tab,
+                    self.carried.is_some(),
+                ) {
+                    if self.screen == Screen::Inventory {
+                        self.close_container();
+                    }
+                    self.screen = Screen::Playing;
+                    self.capture(true);
+                    self.touch.dismiss_finger = Some(t.id);
+                    return;
+                }
+            }
+        }
         if self.touch.menu_finger.is_some()
             || (self.pad_in_menu() && t.phase == TouchPhase::Started)
         {
@@ -418,5 +470,18 @@ fn texture(control: Control, swimming: bool) -> &'static str {
         Control::Chat => "chat/chat",
         Control::Pause => "pause/pause",
         Control::Inventory => "inventory/inventory",
+    }
+}
+
+#[cfg(test)]
+mod dismiss_tests {
+    use super::dismiss_inventory;
+
+    #[test]
+    fn outside_tap_closes_only_when_not_holding_an_item_or_selecting_a_tab() {
+        assert!(dismiss_inventory(true, false, false));
+        assert!(!dismiss_inventory(false, false, false));
+        assert!(!dismiss_inventory(true, true, false));
+        assert!(!dismiss_inventory(true, false, true));
     }
 }
