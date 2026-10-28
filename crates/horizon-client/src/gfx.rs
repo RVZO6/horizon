@@ -83,6 +83,8 @@ mod native_pack;
 mod native_post;
 mod native_sky;
 mod occlusion;
+#[cfg(target_arch = "wasm32")]
+mod opaque;
 mod pack_atlas;
 pub mod pack_draw;
 mod pack_entities;
@@ -543,6 +545,9 @@ pub struct Renderer {
     hdr: Option<hdr::Hdr>,
     /// The HDR output the window's surface can present.
     hdr_output: Option<hdr::Output>,
+    /// The canvas's frames get alpha 1 before they are presented.
+    #[cfg(target_arch = "wasm32")]
+    opaque: opaque::Opaque,
     /// The shader pack's post-processing, and the dimension (legacy id) it was loaded for.
     pack_post: Option<(i32, Option<pack_post::PackPost>)>,
     /// The post passes of one of Horizon's own shader packs; never beside `pack_post`'s.
@@ -2558,6 +2563,8 @@ impl Renderer {
                 on_off(gpu_timer.is_some()),
             ));
         }
+        #[cfg(target_arch = "wasm32")]
+        let opaque = opaque::Opaque::new(&device, config.format.remove_srgb_suffix());
         Ok(Self {
             instance,
             adapter,
@@ -2690,6 +2697,8 @@ impl Renderer {
             world_post,
             hdr: None,
             hdr_output,
+            #[cfg(target_arch = "wasm32")]
+            opaque,
             pack_post: None,
             native: None,
             pass_timing: pack_timing::PassTiming::logging(),
@@ -5230,6 +5239,10 @@ impl Renderer {
                 &mut encoder,
                 (&view_target, self.config.format.remove_srgb_suffix()),
             );
+        }
+        #[cfg(target_arch = "wasm32")]
+        if surface_frame.is_some() {
+            self.opaque.apply(&mut encoder, &view_target);
         }
         let readback = self.screenshot.take().and_then(|path| {
             // The copy and PNG writer both assume 8-bit pixels; a float surface would make
