@@ -8,7 +8,9 @@
 use super::{DisplayReading, DisplayWatch, Renderer, hdr, output};
 use crate::graphics::HdrMode;
 use output::{EffectiveOutput, FrameRequest, OutputCapabilities};
-use std::sync::{Arc, Mutex, PoisonError, mpsc};
+#[cfg(not(any(target_os = "macos", target_arch = "wasm32")))]
+use std::sync::PoisonError;
+use std::sync::{Arc, Mutex, mpsc};
 use std::time::{Duration, Instant};
 
 /// What an output's resources are made for: the encoding presented and the frame.
@@ -258,39 +260,45 @@ pub(super) struct DisplayReader {
 }
 
 impl DisplayReader {
-    /// `None` on macOS, where AppKit answers on the main thread only.
+    /// `None` on macOS (AppKit answers on the main thread only) and `wasm32` (`wgpu` handles
+    /// are not `Send`).
     fn start(surface: &Arc<wgpu::Surface<'static>>, adapter: &wgpu::Adapter) -> Option<Self> {
-        if cfg!(target_os = "macos") {
-            return None;
+        #[cfg(any(target_os = "macos", target_arch = "wasm32"))]
+        {
+            let _ = (surface, adapter);
+            None
         }
-        let (send, handed) = mpsc::channel();
-        let (stop, stopped) = mpsc::channel::<()>();
-        let (surface, adapter) = (Arc::clone(surface), adapter.clone());
-        let thread = std::thread::Builder::new()
-            .name("Display watch".into())
-            .spawn(move || {
-                while stopped.recv_timeout(super::DISPLAY_POLL)
-                    == Err(mpsc::RecvTimeoutError::Timeout)
-                {
-                    let started = Instant::now();
-                    let reading = DisplayReading::read(Some(&*surface), &adapter);
-                    let offered = {
-                        let _configure =
-                            SURFACE_QUERY.lock().unwrap_or_else(PoisonError::into_inner);
-                        offer(Some(&*surface), &adapter)
-                    };
-                    if send.send((reading, offered, started)).is_err() {
-                        break;
+        #[cfg(not(any(target_os = "macos", target_arch = "wasm32")))]
+        {
+            let (send, handed) = mpsc::channel();
+            let (stop, stopped) = mpsc::channel::<()>();
+            let (surface, adapter) = (Arc::clone(surface), adapter.clone());
+            let thread = std::thread::Builder::new()
+                .name("Display watch".into())
+                .spawn(move || {
+                    while stopped.recv_timeout(super::DISPLAY_POLL)
+                        == Err(mpsc::RecvTimeoutError::Timeout)
+                    {
+                        let started = Instant::now();
+                        let reading = DisplayReading::read(Some(&*surface), &adapter);
+                        let offered = {
+                            let _configure =
+                                SURFACE_QUERY.lock().unwrap_or_else(PoisonError::into_inner);
+                            offer(Some(&*surface), &adapter)
+                        };
+                        if send.send((reading, offered, started)).is_err() {
+                            break;
+                        }
                     }
-                }
+                })
+                .ok()?;
+            Some(Self {
+                handed,
+                stop: Some(stop),
+                thread: Some(thread),
+                fresh: None,
             })
-            .ok()?;
-        Some(Self {
-            handed,
-            stop: Some(stop),
-            thread: Some(thread),
-            fresh: None,
-        })
+        }
     }
 
     /// The newest reading handed over since the last call, of those that started after the
@@ -478,8 +486,8 @@ impl Renderer {
                 hdr
             }
         };
-        let memory = pollster::block_on(memory.pop());
-        if let Some(e) = memory.or(pollster::block_on(validation.pop())) {
+        let memory = crate::gfx::scope_error(memory.pop());
+        if let Some(e) = memory.or(crate::gfx::scope_error(validation.pop())) {
             return Err(e.to_string());
         }
         // The metadata the swapchain's configuration sends.

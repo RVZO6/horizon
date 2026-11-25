@@ -258,8 +258,8 @@ impl EntitySkin {
             cache: None,
         });
         let layout = pipeline.get_bind_group_layout(0);
-        let internal = pollster::block_on(internal.pop());
-        if let Some(e) = internal.or(pollster::block_on(validation.pop())) {
+        let internal = crate::gfx::scope_error(internal.pop());
+        if let Some(e) = internal.or(crate::gfx::scope_error(validation.pop())) {
             log::warn!("Horizon renderer: entity models posed on the CPU ({e})");
             return None;
         }

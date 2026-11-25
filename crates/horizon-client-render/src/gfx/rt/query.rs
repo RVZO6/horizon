@@ -61,7 +61,8 @@ pub(in crate::gfx) fn quad_indices(device: &wgpu::Device, quads: u32) -> Option<
         bytemuck::cast_slice(&indices),
         wgpu::BufferUsages::INDEX | blas_input(device),
     );
-    let error = pollster::block_on(memory.pop()).or_else(|| pollster::block_on(validation.pop()));
+    let error =
+        crate::gfx::scope_error(memory.pop()).or_else(|| crate::gfx::scope_error(validation.pop()));
     match error {
         None => buffer,
         Some(e) => {

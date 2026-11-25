@@ -396,7 +396,7 @@ impl PackText {
         let fills = gui
             .then(|| Some([create(super::GUI_INVERT)?, create(super::GUI_ADDITIVE)?]))
             .flatten();
-        if let Some(e) = pollster::block_on(scope.pop()) {
+        if let Some(e) = crate::gfx::scope_error(scope.pop()) {
             log::warn!("the resource pack's {name} shader is not used: {e}");
             return None;
         }

@@ -9,7 +9,10 @@
 //! way: the pipe tells the thread when bytes arrive.
 use super::Body;
 use horizon_protocol::connection::{ConnReader, ConnWriter, Pipe, Socket};
+#[cfg(not(target_arch = "wasm32"))]
 use mio::{Events, Interest, Poll, Registry, Token, Waker};
+#[cfg(target_arch = "wasm32")]
+type Registry = ();
 use std::{
     io::{ErrorKind, Read, Write},
     sync::{
@@ -31,6 +34,7 @@ const SWEEP: Duration = Duration::from_millis(100);
 const AHEAD: usize = 256 << 10;
 /// How long a disconnect's last bytes are given before the socket closes.
 const LINGER: Duration = Duration::from_millis(50);
+#[cfg(not(target_arch = "wasm32"))]
 const WAKER: Token = Token(usize::MAX);
 
 /// The play state's side of a connection (conn.rs's `PlayConn`).
@@ -316,7 +320,10 @@ struct Inbox {
 
 /// One network thread, as the others see it.
 pub(super) struct Worker {
+    #[cfg(not(target_arch = "wasm32"))]
     waker: Waker,
+    #[cfg(target_arch = "wasm32")]
+    wake: std::sync::Condvar,
     inbox: Mutex<Inbox>,
     /// Its connections, to give a new one to the least busy.
     load: AtomicUsize,
@@ -330,9 +337,12 @@ impl Worker {
         empty
     }
     pub(super) fn wake(&self) {
+        #[cfg(not(target_arch = "wasm32"))]
         if let Err(e) = self.waker.wake() {
             log::warn!("[lan] waking a network thread: {e}");
         }
+        #[cfg(target_arch = "wasm32")]
+        self.wake.notify_one();
     }
 }
 
@@ -355,15 +365,22 @@ fn pool() -> Result<&'static Pool, String> {
 fn start(threads: usize) -> std::io::Result<Pool> {
     let mut workers = Vec::new();
     for n in 0..threads {
+        #[cfg(not(target_arch = "wasm32"))]
         let poll = Poll::new()?;
         let worker = Arc::new(Worker {
+            #[cfg(not(target_arch = "wasm32"))]
             waker: Waker::new(poll.registry(), WAKER)?,
+            #[cfg(target_arch = "wasm32")]
+            wake: std::sync::Condvar::new(),
             inbox: Mutex::default(),
             load: AtomicUsize::new(0),
         });
         let mine = worker.clone();
         // Payload handlers of wasm mods run on these threads (the server's network root).
+        #[cfg(not(target_arch = "wasm32"))]
         horizon_guest_stack::spawn(format!("horizon-net-{n}"), move || run(poll, &mine))?;
+        #[cfg(target_arch = "wasm32")]
+        horizon_guest_stack::spawn(format!("horizon-net-{n}"), move || run_wasm(&mine))?;
         workers.push(worker);
     }
     Ok(Pool { workers })
@@ -403,6 +420,7 @@ pub(super) fn adopt(
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn run(mut poll: Poll, worker: &Arc<Worker>) {
     let mut events = Events::with_capacity(1024);
     let mut conns: Vec<Option<Conn>> = Vec::new();
@@ -434,71 +452,136 @@ fn run(mut poll: Poll, worker: &Arc<Worker>) {
         }
         let inbox =
             std::mem::take(&mut *worker.inbox.lock().unwrap_or_else(PoisonError::into_inner));
-        for adopted in inbox.adopt {
-            let i = free.pop().unwrap_or(conns.len());
-            if i == conns.len() {
-                conns.push(None);
-            }
-            match Conn::register(adopted, poll.registry(), worker, i, now) {
-                Ok(mut c) => {
-                    c.outbox.attach(i);
-                    c.read(now);
-                    c.serve(now);
-                    conns[i] = Some(c);
-                    touched.push(i);
+        step_inbox(
+            inbox,
+            poll.registry(),
+            worker,
+            now,
+            &mut conns,
+            &mut free,
+            &mut touched,
+            &mut sweep_at,
+            &mut release_seen,
+        );
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+fn run_wasm(worker: &Arc<Worker>) {
+    let mut conns: Vec<Option<Conn>> = Vec::new();
+    let mut free: Vec<usize> = Vec::new();
+    let mut touched: Vec<usize> = Vec::new();
+    let mut sweep_at = Instant::now() + SWEEP;
+    let mut release_seen = horizon_threads::release_seen();
+    loop {
+        let inbox = {
+            let mut guard = worker.inbox.lock().unwrap_or_else(PoisonError::into_inner);
+            let empty = guard.serve.is_empty() && guard.read.is_empty() && guard.adopt.is_empty();
+            if empty {
+                let wait = sweep_at.saturating_duration_since(Instant::now());
+                if !wait.is_zero() {
+                    let (g, _) = worker
+                        .wake
+                        .wait_timeout(guard, wait)
+                        .unwrap_or_else(PoisonError::into_inner);
+                    guard = g;
                 }
-                Err(()) => free.push(i),
             }
+            std::mem::take(&mut *guard)
+        };
+        let now = Instant::now();
+        step_inbox(
+            inbox,
+            &(),
+            worker,
+            now,
+            &mut conns,
+            &mut free,
+            &mut touched,
+            &mut sweep_at,
+            &mut release_seen,
+        );
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn step_inbox(
+    inbox: Inbox,
+    registry: &Registry,
+    worker: &Arc<Worker>,
+    now: Instant,
+    conns: &mut Vec<Option<Conn>>,
+    free: &mut Vec<usize>,
+    touched: &mut Vec<usize>,
+    sweep_at: &mut Instant,
+    release_seen: &mut u64,
+) {
+    for adopted in inbox.adopt {
+        let i = free.pop().unwrap_or(conns.len());
+        if i == conns.len() {
+            conns.push(None);
         }
-        for i in inbox.read {
-            if let Some(Some(c)) = conns.get_mut(i) {
-                c.memory_ready(now);
-                touched.push(i);
-            }
-        }
-        for i in inbox.serve {
-            if let Some(Some(c)) = conns.get_mut(i) {
+        match Conn::register(adopted, registry, worker, i, now) {
+            Ok(mut c) => {
+                c.outbox.attach(i);
+                c.read(now);
                 c.serve(now);
+                conns[i] = Some(c);
+                touched.push(i);
+            }
+            Err(()) => free.push(i),
+        }
+    }
+    for i in inbox.read {
+        if let Some(Some(c)) = conns.get_mut(i) {
+            c.memory_ready(now);
+            touched.push(i);
+        }
+    }
+    for i in inbox.serve {
+        if let Some(Some(c)) = conns.get_mut(i) {
+            c.serve(now);
+            touched.push(i);
+        }
+    }
+    if now >= *sweep_at {
+        *sweep_at = now + SWEEP;
+        // Give back what was freed into this thread's heap (the packets it
+        // read, the buffers of connections gone) when the server asks.
+        if horizon_threads::release_asked(release_seen) {
+            if conns.iter().all(Option::is_none) {
+                *conns = Vec::new();
+                *free = Vec::new();
+            }
+            horizon_threads::release_free_memory();
+        }
+        touched.clear();
+        for (i, slot) in conns.iter_mut().enumerate() {
+            if let Some(c) = slot {
+                c.sweep(now);
                 touched.push(i);
             }
         }
-        if now >= sweep_at {
-            sweep_at = now + SWEEP;
-            // Give back what was freed into this thread's heap (the packets it
-            // read, the buffers of connections gone) when the server asks.
-            if horizon_threads::release_asked(&mut release_seen) {
-                if conns.iter().all(Option::is_none) {
-                    conns = Vec::new();
-                    free = Vec::new();
-                }
-                horizon_threads::release_free_memory();
-            }
-            touched.clear();
-            for (i, slot) in conns.iter_mut().enumerate() {
-                if let Some(c) = slot {
-                    c.sweep(now);
-                    touched.push(i);
-                }
-            }
-        }
-        for i in touched.drain(..) {
-            if conns[i].as_ref().is_some_and(|c| c.done(now)) {
-                let c = conns[i].take().expect("checked");
-                c.close(poll.registry(), worker);
-                free.push(i);
-            }
+    }
+    for i in touched.drain(..) {
+        if conns[i].as_ref().is_some_and(|c| c.done(now)) {
+            let c = conns[i].take().expect("checked");
+            c.close(registry, worker);
+            free.push(i);
         }
     }
 }
 
 /// A connection's stream, polled.
 enum Io {
+    #[cfg(not(target_arch = "wasm32"))]
     Tcp(mio::net::TcpStream),
     Memory(Pipe),
 }
 impl Read for Io {
     fn read(&mut self, out: &mut [u8]) -> std::io::Result<usize> {
         match self {
+            #[cfg(not(target_arch = "wasm32"))]
             Self::Tcp(s) => s.read(out),
             Self::Memory(p) => p.read(out),
         }
@@ -507,6 +590,7 @@ impl Read for Io {
 impl Write for Io {
     fn write(&mut self, data: &[u8]) -> std::io::Result<usize> {
         match self {
+            #[cfg(not(target_arch = "wasm32"))]
             Self::Tcp(s) => s.write(data),
             Self::Memory(p) => p.write(data),
         }
@@ -558,12 +642,13 @@ impl Conn {
 
     fn register(
         a: Adopted,
-        registry: &Registry,
+        #[cfg_attr(target_arch = "wasm32", allow(unused_variables))] registry: &Registry,
         worker: &Arc<Worker>,
         i: usize,
         now: Instant,
     ) -> Result<Self, ()> {
         let io = match a.socket {
+            #[cfg(not(target_arch = "wasm32"))]
             Socket::Tcp(stream) => {
                 let registered = stream.set_nonblocking(true).and_then(|()| {
                     let mut stream = mio::net::TcpStream::from_std(stream);
@@ -582,6 +667,15 @@ impl Conn {
                         return Err(());
                     }
                 }
+            }
+            #[cfg(target_arch = "wasm32")]
+            Socket::Tcp(_) => {
+                let mut session = a.session;
+                a.outbox.closed();
+                session.left("TCP sockets are not available in the browser".to_owned());
+                session.closed();
+                worker.load.fetch_sub(1, Ordering::Relaxed);
+                return Err(());
             }
             Socket::Memory(mut pipe) => {
                 pipe.set_nonblocking(true);
@@ -878,8 +972,13 @@ impl Conn {
         }
     }
 
-    fn close(mut self, registry: &Registry, worker: &Worker) {
+    fn close(
+        mut self,
+        #[cfg_attr(target_arch = "wasm32", allow(unused_variables))] registry: &Registry,
+        worker: &Worker,
+    ) {
         match &mut self.io {
+            #[cfg(not(target_arch = "wasm32"))]
             Io::Tcp(stream) => {
                 let _ = registry.deregister(stream);
                 let _ = stream.shutdown(std::net::Shutdown::Both);

@@ -334,8 +334,8 @@ pub(super) fn chain_cancellable(
         let validation = device.push_error_scope(wgpu::ErrorFilter::Validation);
         let internal = device.push_error_scope(wgpu::ErrorFilter::Internal);
         let pipeline = compute_pipeline(device, &stage.label, layout, stage.module, constants);
-        let internal = pollster::block_on(internal.pop());
-        if let Some(e) = internal.or(pollster::block_on(validation.pop())) {
+        let internal = crate::gfx::scope_error(internal.pop());
+        if let Some(e) = internal.or(crate::gfx::scope_error(validation.pop())) {
             return Err(BuildError::Refused(format!("{}: {e}", stage.file)));
         }
         store.computes.push(ComputePass {
@@ -966,7 +966,7 @@ fn unmade(device: &wgpu::Device, kept: &Kept) -> Option<String> {
                 view_formats: &[],
             })
             .destroy();
-        if let Some(e) = pollster::block_on(scope.pop()) {
+        if let Some(e) = crate::gfx::scope_error(scope.pop()) {
             return Some(format!(
                 "{}: the device can't make an {} texture to keep: {e}",
                 r.name,
@@ -1002,7 +1002,7 @@ fn made<'a>(
         .map(|r| make(device, &r.name, r.shape, size))
         .collect();
     // Native error scopes resolve at once.
-    let error = pollster::block_on(memory.pop()).or(pollster::block_on(validation.pop()));
+    let error = crate::gfx::scope_error(memory.pop()).or(crate::gfx::scope_error(validation.pop()));
     let error = error.map(|e| e.to_string());
     #[cfg(test)]
     let error = error.or_else(|| {

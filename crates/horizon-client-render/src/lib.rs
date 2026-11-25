@@ -175,6 +175,7 @@ pub mod weather;
 pub mod widgets;
 pub mod world;
 pub mod worldborder;
+#[cfg(not(target_arch = "wasm32"))]
 pub use horizon_assets::zip;
 pub use horizon_client_core::Result;
 pub use horizon_client_core::block_entity_nbt;

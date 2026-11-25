@@ -759,8 +759,8 @@ impl NativeShadow {
                 "horizon_shadow_fs_displaced",
             )
         });
-        let internal = pollster::block_on(internal.pop());
-        if let Some(e) = internal.or(pollster::block_on(validation.pop())) {
+        let internal = crate::gfx::scope_error(internal.pop());
+        if let Some(e) = internal.or(crate::gfx::scope_error(validation.pop())) {
             return Err(format!("shadow pass: {e}"));
         }
         Ok(Self {

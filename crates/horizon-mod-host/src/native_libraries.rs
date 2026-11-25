@@ -1,7 +1,9 @@
 //! Checked, process-lifetime native library loading.
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
-use std::{ffi::CStr, path::Path};
+#[cfg(not(target_arch = "wasm32"))]
+use std::ffi::CStr;
+use std::path::Path;
 
 /// Commit used for the pinned SDK ABI.
 pub const GAME_BUILD_ID: &str = env!("HORIZON_GAME_BUILD_ID");
@@ -69,6 +71,12 @@ fn verify(folder: &Path, libraries: &[Library]) -> Result<(), String> {
     Ok(())
 }
 
+#[cfg(target_arch = "wasm32")]
+fn load(_folder: &Path) -> Result<Vec<&'static mod_api::__private::native::NativeMod>, String> {
+    Ok(Vec::new())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
 fn load(folder: &Path) -> Result<Vec<&'static mod_api::__private::native::NativeMod>, String> {
     let path = folder.join("native-mods.json");
     let record = match std::fs::read(&path) {

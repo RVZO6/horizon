@@ -183,9 +183,9 @@ pub fn census() -> Vec<(&'static str, isize)> {
     by_name
 }
 
-#[cfg(not(miri))]
+#[cfg(not(any(miri, target_arch = "wasm32")))]
 use mimalloc::MiMalloc as BackingAlloc;
-#[cfg(miri)]
+#[cfg(any(miri, target_arch = "wasm32"))]
 use std::alloc::System as BackingAlloc;
 
 /// mimalloc with a tag in front of each block (see the module).

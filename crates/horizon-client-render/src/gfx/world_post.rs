@@ -332,8 +332,8 @@ impl Post {
                 multiview_mask: None,
                 cache: None,
             });
-            let internal = pollster::block_on(internal.pop());
-            match internal.or(pollster::block_on(validation.pop())) {
+            let internal = crate::gfx::scope_error(internal.pop());
+            match internal.or(crate::gfx::scope_error(validation.pop())) {
                 None => {
                     let uniform = device.create_buffer(&wgpu::BufferDescriptor {
                         label: Some("Horizon TAA"),
@@ -585,7 +585,8 @@ impl Post {
             let validation = device.push_error_scope(wgpu::ErrorFilter::Validation);
             let memory = device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
             let target = self.build_target(device, size, history_size);
-            let error = pollster::block_on(memory.pop()).or(pollster::block_on(validation.pop()));
+            let error =
+                crate::gfx::scope_error(memory.pop()).or(crate::gfx::scope_error(validation.pop()));
             if error.is_none() {
                 // New textures: no history yet.
                 self.taa_this_frame.jitter[2] = 1.0;
@@ -758,7 +759,7 @@ impl Post {
                     view_formats: &[],
                 })
                 .create_view(&Default::default());
-            let error = pollster::block_on(memory.pop()).or(pollster::block_on(validation.pop()));
+            let error = crate::gfx::scope_error(memory.pop()).or(crate::gfx::scope_error(validation.pop()));
             if let Some(error) = error {
                 log::warn!(
                     "Horizon renderer: no video memory for the shader pack's FXAA or sharpening at {size:?}; drawing it without ({error})"

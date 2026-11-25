@@ -161,6 +161,10 @@ impl std::error::Error for UsageError {}
 /// against, so a launcher offers only what will work.
 fn content() -> serde_json::Value {
     use horizon_mod_package::manifest;
+    #[cfg(not(target_arch = "wasm32"))]
+    let modpack_format = horizon_mod_package::modpack::FORMAT;
+    #[cfg(target_arch = "wasm32")]
+    let modpack_format = 1u32;
     serde_json::json!({
         // 0.1 was the WebAssembly code line: no build runs it any more.
         "mod": { "api": [manifest::API] },
@@ -169,7 +173,7 @@ fn content() -> serde_json::Value {
         "shader": { "schema": horizon_shader_api::SCHEMA, "api": [horizon_shader_api::API] },
         "resourcepack": { "format": horizon_core::version::RESOURCE_PACK_FORMAT },
         "datapack": { "format": horizon_core::version::DATA_PACK_FORMAT },
-        "modpack": { "format": horizon_mod_package::modpack::FORMAT },
+        "modpack": { "format": modpack_format },
         "index": { "schema": horizon_mod_package::index::SCHEMA },
     })
 }

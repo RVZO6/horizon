@@ -154,6 +154,7 @@ pub struct Connection {
 /// to no address listens (a vanilla server with `server-ip` empty): `[::]` with `IPV6_V6ONLY` off, so an IPv4
 /// peer arrives as `::ffff:a.b.c.d`. `SO_REUSEADDR` as std's `TcpListener::bind` sets it on Unix, never on
 /// Windows (where it would let another program take the port). Blocking, like std's.
+#[cfg(not(target_arch = "wasm32"))]
 pub fn bind_dual_stack(port: u16) -> std::io::Result<std::net::TcpListener> {
     use socket2::{Domain, Protocol, Socket, Type};
     let socket = Socket::new(Domain::IPV6, Type::STREAM, Some(Protocol::TCP))?;
@@ -165,18 +166,29 @@ pub fn bind_dual_stack(port: u16) -> std::io::Result<std::net::TcpListener> {
     Ok(socket.into())
 }
 
+#[cfg(target_arch = "wasm32")]
+pub fn bind_dual_stack(_port: u16) -> std::io::Result<std::net::TcpListener> {
+    Err(std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        "TCP listeners are not available in the browser",
+    ))
+}
+
 fn configure_stream(stream: &TcpStream) -> Result<()> {
     stream.set_nodelay(true)?;
-    let sock = socket2::SockRef::from(stream);
-    let keepalive = socket2::TcpKeepalive::new()
-        .with_time(Duration::from_secs(10))
-        .with_interval(Duration::from_secs(3));
-    #[cfg(not(any(target_os = "windows", target_os = "openbsd")))]
-    let keepalive = keepalive.with_retries(3);
-    let _ = sock.set_tcp_keepalive(&keepalive);
-    #[cfg(target_os = "linux")]
+    #[cfg(not(target_arch = "wasm32"))]
     {
-        let _ = sock.set_quickack(true);
+        let sock = socket2::SockRef::from(stream);
+        let keepalive = socket2::TcpKeepalive::new()
+            .with_time(Duration::from_secs(10))
+            .with_interval(Duration::from_secs(3));
+        #[cfg(not(any(target_os = "windows", target_os = "openbsd")))]
+        let keepalive = keepalive.with_retries(3);
+        let _ = sock.set_tcp_keepalive(&keepalive);
+        #[cfg(target_os = "linux")]
+        {
+            let _ = sock.set_quickack(true);
+        }
     }
     Ok(())
 }

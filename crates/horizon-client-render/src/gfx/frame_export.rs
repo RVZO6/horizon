@@ -2,12 +2,14 @@
 //! can each hold a few frames while the render thread prepares the next one.
 
 use super::{GpuChecks, Renderer, Result, copy_frame_into, drawable_size, padded_row};
+#[cfg(not(target_arch = "wasm32"))]
+use std::sync::mpsc::sync_channel;
 use std::{
     io,
     sync::{
         Arc,
         atomic::{AtomicU8, Ordering},
-        mpsc::{Receiver, SyncSender, TryRecvError, TrySendError, sync_channel},
+        mpsc::{Receiver, SyncSender, TryRecvError, TrySendError},
     },
     thread::{self, JoinHandle},
     time::{Duration, Instant},
@@ -54,86 +56,94 @@ impl Readbacks {
         out: SyncSender<ExportFrame>,
         stall_timeout: Duration,
     ) -> Result<Self> {
-        let bytes = u64::from(padded_row(size[0])) * u64::from(size[1]);
-        if bytes > device.limits().max_buffer_size {
-            return Err("export readback exceeds the device's buffer limit".into());
+        #[cfg(target_arch = "wasm32")]
+        {
+            let _ = (device, original_size, size, out, stall_timeout);
+            return Err("frame export is unavailable in the browser".into());
         }
-        let (return_buffer, available) = sync_channel(SLOTS);
-        let checks = GpuChecks::push(device);
-        for _ in 0..SLOTS {
-            let buffer = device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some("Horizon export readback"),
-                size: bytes,
-                usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
-                mapped_at_creation: false,
-            });
-            return_buffer.try_send(buffer).expect("new export pool");
-        }
-        if let Some(error) = checks.pop() {
-            return Err(format!("could not allocate export readbacks: {error}").into());
-        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let bytes = u64::from(padded_row(size[0])) * u64::from(size[1]);
+            if bytes > device.limits().max_buffer_size {
+                return Err("export readback exceeds the device's buffer limit".into());
+            }
+            let (return_buffer, available) = sync_channel(SLOTS);
+            let checks = GpuChecks::push(device);
+            for _ in 0..SLOTS {
+                let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+                    label: Some("Horizon export readback"),
+                    size: bytes,
+                    usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+                    mapped_at_creation: false,
+                });
+                return_buffer.try_send(buffer).expect("new export pool");
+            }
+            if let Some(error) = checks.pop() {
+                return Err(format!("could not allocate export readbacks: {error}").into());
+            }
 
-        let (copies, ready) = sync_channel::<Copy>(SLOTS);
-        let (recycle, recycled) = sync_channel::<Vec<u8>>(SLOTS);
-        let state = Arc::new(AtomicU8::new(CAPTURING));
-        let control = Arc::clone(&state);
-        let device = device.clone();
-        let worker = thread::Builder::new()
-            .name("frame-readback".into())
-            .spawn(move || {
-                for copy in ready {
-                    if control.load(Ordering::Acquire) == ABORTED {
-                        break;
-                    }
-                    let slice = copy.buffer.slice(..);
-                    let (mapped, result) = sync_channel(1);
-                    slice.map_async(wgpu::MapMode::Read, move |status| {
-                        let _ = mapped.try_send(status);
-                    });
-                    device
-                        .poll(wgpu::PollType::Wait {
-                            submission_index: Some(copy.submission),
-                            timeout: Some(Duration::from_secs(10)),
-                        })
-                        .map_err(|e| io::Error::other(e.to_string()))?;
-                    result
-                        .recv_timeout(Duration::from_secs(10))
-                        .map_err(|e| io::Error::other(e.to_string()))?
-                        .map_err(|e| io::Error::other(e.to_string()))?;
-                    let mut rgb = recycled.try_recv().unwrap_or_default();
-                    {
-                        let mapped = slice
-                            .get_mapped_range()
+            let (copies, ready) = sync_channel::<Copy>(SLOTS);
+            let (recycle, recycled) = sync_channel::<Vec<u8>>(SLOTS);
+            let state = Arc::new(AtomicU8::new(CAPTURING));
+            let control = Arc::clone(&state);
+            let device = device.clone();
+            let worker = thread::Builder::new()
+                .name("frame-readback".into())
+                .spawn(move || {
+                    for copy in ready {
+                        if control.load(Ordering::Acquire) == ABORTED {
+                            break;
+                        }
+                        let slice = copy.buffer.slice(..);
+                        let (mapped, result) = sync_channel(1);
+                        slice.map_async(wgpu::MapMode::Read, move |status| {
+                            let _ = mapped.try_send(status);
+                        });
+                        device
+                            .poll(wgpu::PollType::Wait {
+                                submission_index: Some(copy.submission),
+                                timeout: Some(Duration::from_secs(10)),
+                            })
                             .map_err(|e| io::Error::other(e.to_string()))?;
-                        unpack_rgb(&mapped, size, copy.bgra, &mut rgb);
+                        result
+                            .recv_timeout(Duration::from_secs(10))
+                            .map_err(|e| io::Error::other(e.to_string()))?
+                            .map_err(|e| io::Error::other(e.to_string()))?;
+                        let mut rgb = recycled.try_recv().unwrap_or_default();
+                        {
+                            let mapped = slice
+                                .get_mapped_range()
+                                .map_err(|e| io::Error::other(e.to_string()))?;
+                            unpack_rgb(&mapped, size, copy.bgra, &mut rgb);
+                        }
+                        copy.buffer.unmap();
+                        send_frame(
+                            &out,
+                            &control,
+                            stall_timeout,
+                            ExportFrame {
+                                index: copy.index,
+                                size,
+                                rgb,
+                            },
+                        )?;
+                        let _ = return_buffer.try_send(copy.buffer);
                     }
-                    copy.buffer.unmap();
-                    send_frame(
-                        &out,
-                        &control,
-                        stall_timeout,
-                        ExportFrame {
-                            index: copy.index,
-                            size,
-                            rgb,
-                        },
-                    )?;
-                    let _ = return_buffer.try_send(copy.buffer);
-                }
-                Ok(())
-            })?;
-        Ok(Self {
-            original_size,
-            size,
-            available,
-            armed: None,
-            reserved: None,
-            bgra: false,
-            copies: Some(copies),
-            recycle,
-            state,
-            worker: Some(worker),
-        })
+                    Ok(())
+                })?;
+            Ok(Self {
+                original_size,
+                size,
+                available,
+                armed: None,
+                reserved: None,
+                bgra: false,
+                copies: Some(copies),
+                recycle,
+                state,
+                worker: Some(worker),
+            })
+        }
     }
 
     #[cfg(test)]

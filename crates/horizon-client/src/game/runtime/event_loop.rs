@@ -5,14 +5,30 @@
 //! (#4951) has no display, so it cannot have that loop: it runs its own, and hands the same
 //! methods this trait instead. winit's loop implements it, so a window's game is unchanged.
 
-use std::time::{Duration, Instant};
+#[cfg(not(target_arch = "wasm32"))]
+use std::time::Duration;
+use std::time::Instant;
 use winit::event_loop::{ActiveEventLoop, ControlFlow};
+
+/// The event loop's flow between frames. A browser has no blocking present to pace a polling
+/// loop: there `Poll` schedules the next pass at once, over and over, and keeps the page's
+/// thread from its input. Waiting, the loop runs once a frame, for the redraw each pass asks.
+#[cfg(not(target_arch = "wasm32"))]
+pub(super) const POLL: ControlFlow = ControlFlow::Poll;
+#[cfg(target_arch = "wasm32")]
+pub(super) const POLL: ControlFlow = ControlFlow::Wait;
 
 /// A successful frame only permits polling until the next idle iteration. If
 /// the compositor stops delivering redraws, the old result must not keep the
 /// loop spinning indefinitely. Offscreen frames are driven by the loop itself.
 pub(super) fn redraw_flow(frame_drawn: &mut bool, offscreen: bool, now: Instant) -> ControlFlow {
     let drew_frame = std::mem::take(frame_drawn);
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = (drew_frame, offscreen, now);
+        POLL
+    }
+    #[cfg(not(target_arch = "wasm32"))]
     if offscreen || drew_frame {
         ControlFlow::Poll
     } else {

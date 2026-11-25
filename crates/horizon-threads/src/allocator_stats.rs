@@ -30,6 +30,7 @@ fn in_use(json: &str) -> Option<usize> {
     Some(total)
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn stats_json() -> Option<String> {
     // SAFETY: a null buffer asks mimalloc for one of its own, freed below with its `mi_free`.
     let raw = unsafe { libmimalloc_sys::mi_stats_get_json(0, std::ptr::null_mut()) };
@@ -43,6 +44,11 @@ fn stats_json() -> Option<String> {
     // SAFETY: `raw` came from `mi_stats_get_json` with no buffer given.
     unsafe { libmimalloc_sys::mi_free(raw.cast()) };
     Some(text)
+}
+
+#[cfg(target_arch = "wasm32")]
+fn stats_json() -> Option<String> {
+    None
 }
 
 /// The bytes of the pages holding allocations now: the heap in use, counting each page whole.

@@ -1,7 +1,9 @@
 //! Screenshot GPU waits happen on a worker; the owning thread receives mutable pixels.
 use super::screenshot::{HdrScreenshot, PendingScreenshot};
 use super::{Result, ScreenshotRequest, hdr10_to_rgb16, padded_row, square_downscale};
-use std::sync::mpsc::{self, Receiver, TryRecvError};
+#[cfg(not(target_arch = "wasm32"))]
+use std::sync::mpsc;
+use std::sync::mpsc::{Receiver, TryRecvError};
 
 pub(super) struct Reader {
     pub device: wgpu::Device,
@@ -101,21 +103,29 @@ impl Readbacks {
         buffer: wgpu::Buffer,
         hdr: Option<wgpu::Buffer>,
     ) -> Result<()> {
-        let (sender, receiver) = mpsc::channel();
-        let worker = std::thread::Builder::new()
-            .name("Screenshot readback".into())
-            .spawn(move || {
-                let result = reader
-                    .read_screenshot(&request, &buffer, hdr.as_ref())
-                    .map_err(|e| e.to_string());
-                let _ = sender.send(result);
-            })?;
-        #[cfg(test)]
-        self.1.push(worker);
-        #[cfg(not(test))]
-        drop(worker);
-        self.0.push(receiver);
-        Ok(())
+        #[cfg(target_arch = "wasm32")]
+        {
+            let _ = (reader, request, buffer, hdr);
+            Err("screenshot readback is unavailable in the browser".into())
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let (sender, receiver) = mpsc::channel();
+            let worker = std::thread::Builder::new()
+                .name("Screenshot readback".into())
+                .spawn(move || {
+                    let result = reader
+                        .read_screenshot(&request, &buffer, hdr.as_ref())
+                        .map_err(|e| e.to_string());
+                    let _ = sender.send(result);
+                })?;
+            #[cfg(test)]
+            self.1.push(worker);
+            #[cfg(not(test))]
+            drop(worker);
+            self.0.push(receiver);
+            Ok(())
+        }
     }
 
     pub fn poll(&mut self) -> Option<Outcome> {

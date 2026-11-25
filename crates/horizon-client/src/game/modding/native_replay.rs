@@ -4,8 +4,12 @@
 //! packets, so they too run at the end of the frame, outside every hook, as `disconnect` does.
 //! Pause, resume and speed only set the clock and apply at once.
 use super::{ClientQuit, Game, PendingWorldEntry};
+#[cfg(not(target_arch = "wasm32"))]
 use cap_fs_ext::{DirExt, FollowSymlinks, OpenOptionsFollowExt};
+#[cfg(not(target_arch = "wasm32"))]
 use cap_std::fs::{Dir, OpenOptions};
+#[cfg(target_arch = "wasm32")]
+pub(super) struct Dir;
 use horizon_client::file_id::{FileIdentity, reparse_point, valid_id};
 use horizon_client::studio::{
     ReplayDriver,
@@ -17,7 +21,9 @@ use mod_api::{
     ReplayMarker, ReplayState,
 };
 use std::fs::File;
-use std::io::{self, Read, Seek, SeekFrom};
+use std::io;
+#[cfg(not(target_arch = "wasm32"))]
+use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
@@ -123,9 +129,20 @@ pub(super) fn recording_path(dir: &Path, id: &str) -> Result<PathBuf, ReplayErro
     Ok(file)
 }
 
+#[cfg(target_arch = "wasm32")]
+pub(super) fn recordings_folder(_dir: &Path) -> Result<Dir, ReplayError> {
+    Err(ReplayError::NotFound)
+}
+
+#[cfg(target_arch = "wasm32")]
+pub(super) fn open_in_folder(_folder: &Dir, _id: &str) -> Result<(File, FileIdentity), ReplayError> {
+    Err(ReplayError::NotFound)
+}
+
 /// The recordings folder `dir`, opened as a folder handle: `dir`'s parent is opened as the game
 /// names it, and `dir` in it without following a link. Every recording is opened through this
 /// handle, so a folder renamed or replaced by a link afterwards can't redirect the open.
+#[cfg(not(target_arch = "wasm32"))]
 pub(super) fn recordings_folder(dir: &Path) -> Result<Dir, ReplayError> {
     let (Some(parent), Some(name)) = (dir.parent(), dir.file_name()) else {
         return Err(ReplayError::NotFound);
@@ -152,6 +169,7 @@ pub(super) fn recordings_folder(dir: &Path) -> Result<Dir, ReplayError> {
 /// handle without following a link, and checked again once open: a regular file, not a reparse
 /// point, starting as a zip archive does (else `Unreadable`). It comes back rewound with its
 /// identity. Nothing later opens it by name.
+#[cfg(not(target_arch = "wasm32"))]
 pub(super) fn open_in_folder(folder: &Dir, id: &str) -> Result<(File, FileIdentity), ReplayError> {
     if !valid_id(id) {
         return Err(ReplayError::InvalidId);

@@ -372,8 +372,8 @@ impl NativePack {
             (lights, sources),
             cancel,
         );
-        let internal = pollster::block_on(internal.pop());
-        let refused = internal.or(pollster::block_on(validation.pop()));
+        let internal = crate::gfx::scope_error(internal.pop());
+        let refused = internal.or(crate::gfx::scope_error(validation.pop()));
         if cancel.load(Ordering::Relaxed) {
             return Err(BuildError::Cancelled);
         }
@@ -1520,7 +1520,7 @@ file = \"material.wgsl\"
         }
         queue.submit([encoder.finish()]);
         device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
-        if let Some(e) = pollster::block_on(scope.pop()) {
+        if let Some(e) = crate::gfx::scope_error(scope.pop()) {
             panic!("{e}");
         }
     }
@@ -1768,7 +1768,7 @@ file = \"material.wgsl\"
                 }
             }
         }
-        if let Some(e) = pollster::block_on(scope.pop()) {
+        if let Some(e) = crate::gfx::scope_error(scope.pop()) {
             panic!("{e}");
         }
     }

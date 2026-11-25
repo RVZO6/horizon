@@ -38,13 +38,18 @@ pub fn copy_pack(from: &Path, dir: &Path) -> io::Result<()> {
         if !from.join("pack.mcmeta").is_file() {
             return Err(invalid());
         }
-    } else if !kind.is_file()
-        || !from
-            .extension()
-            .is_some_and(|e| e.eq_ignore_ascii_case("zip"))
-        || !crate::zip::Zip::open(from)?.contains("pack.mcmeta")
-    {
+    } else {
+        #[cfg(target_arch = "wasm32")]
         return Err(invalid());
+        #[cfg(not(target_arch = "wasm32"))]
+        if !kind.is_file()
+            || !from
+                .extension()
+                .is_some_and(|e| e.eq_ignore_ascii_case("zip"))
+            || !crate::zip::Zip::open(from)?.contains("pack.mcmeta")
+        {
+            return Err(invalid());
+        }
     }
     let name = from.file_name().ok_or_else(invalid)?;
     fs::create_dir_all(dir)?;

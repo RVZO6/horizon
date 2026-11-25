@@ -151,8 +151,8 @@ impl Material {
             usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
-        let memory = pollster::block_on(memory.pop());
-        if let Some(e) = memory.or(pollster::block_on(validation.pop())) {
+        let memory = crate::gfx::scope_error(memory.pop());
+        if let Some(e) = memory.or(crate::gfx::scope_error(validation.pop())) {
             log::warn!("native celestial triangles unavailable this frame: {e}");
             return None;
         }

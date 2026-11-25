@@ -7,7 +7,10 @@
 //! thread without touching the main thread.
 
 use std::any::Any;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::AtomicBool;
+#[cfg(not(target_arch = "wasm32"))]
+use std::sync::atomic::{AtomicU64, Ordering};
+#[cfg(not(target_arch = "wasm32"))]
 use std::sync::{Arc, Condvar, Mutex};
 
 use super::block_light::LightTable;
@@ -115,8 +118,10 @@ pub enum NativePackOutcome<C, M> {
     Stale,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 type JobFn = Box<dyn FnOnce(&AtomicBool) -> WorkerOutcome + Send + 'static>;
 
+#[cfg(not(target_arch = "wasm32"))]
 struct PendingJob {
     generation: u64,
     cancel: Arc<AtomicBool>,
@@ -129,11 +134,13 @@ pub(in crate::gfx) struct CompletedJob {
     pub outcome: Result<WorkerOutcome, String>,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 struct StoredCompleted {
     generation: u64,
     job: CompletedJob,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 #[derive(Default)]
 struct WorkerState {
     pending: Option<PendingJob>,
@@ -143,6 +150,7 @@ struct WorkerState {
     shutdown: bool,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 struct Shared {
     generation: AtomicU64,
     state: Mutex<WorkerState>,
@@ -155,11 +163,15 @@ struct Shared {
 /// native shader pack pay zero thread overhead.
 #[derive(Default)]
 pub(in crate::gfx) struct NativePackLoader {
+    #[cfg(not(target_arch = "wasm32"))]
     shared: Option<Arc<Shared>>,
+    #[cfg(target_arch = "wasm32")]
+    ready: Option<CompletedJob>,
     in_flight: bool,
 }
 
 impl NativePackLoader {
+    #[cfg(not(target_arch = "wasm32"))]
     fn ensure_worker(&mut self) -> Result<&Arc<Shared>, std::io::Error> {
         if self.shared.is_none() {
             let shared = Arc::new(Shared {
@@ -179,6 +191,7 @@ impl NativePackLoader {
     /// Submits a new native pack build. Any previously queued or in-flight build is cancelled and
     /// its result discarded (latest-wins). Returns `Err` only if the worker thread could not be
     /// spawned.
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn submit<C, F>(&mut self, context: C, run: F) -> Result<(), (C, std::io::Error)>
     where
         C: Send + 'static,
@@ -205,20 +218,44 @@ impl NativePackLoader {
         Ok(())
     }
 
+    /// Runs the native pack build inline on `wasm32`, where `wgpu` handles are `!Send`.
+    #[cfg(target_arch = "wasm32")]
+    pub fn submit<C, F>(&mut self, context: C, run: F) -> Result<(), (C, std::io::Error)>
+    where
+        C: Send + 'static,
+        F: FnOnce(&AtomicBool) -> WorkerOutcome + 'static,
+    {
+        let cancel = AtomicBool::new(false);
+        let outcome = crate::crash::contain(std::panic::AssertUnwindSafe(|| run(&cancel)));
+        self.ready = Some(CompletedJob {
+            context: Box::new(context),
+            outcome,
+        });
+        self.in_flight = true;
+        Ok(())
+    }
+
     /// Cancels any queued or in-flight build and discards any unpolled result.
     pub fn cancel(&mut self) {
         self.in_flight = false;
-        let Some(shared) = &self.shared else {
-            return;
-        };
-        let mut state = shared.state.lock().unwrap_or_else(|e| e.into_inner());
-        shared.generation.fetch_add(1, Ordering::AcqRel);
-        if let Some(cancel) = state.running_cancel.as_ref() {
-            cancel.store(true, Ordering::Release);
+        #[cfg(target_arch = "wasm32")]
+        {
+            self.ready = None;
         }
-        state.pending = None;
-        state.completed = None;
-        shared.wake.notify_all();
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let Some(shared) = &self.shared else {
+                return;
+            };
+            let mut state = shared.state.lock().unwrap_or_else(|e| e.into_inner());
+            shared.generation.fetch_add(1, Ordering::AcqRel);
+            if let Some(cancel) = state.running_cancel.as_ref() {
+                cancel.store(true, Ordering::Release);
+            }
+            state.pending = None;
+            state.completed = None;
+            shared.wake.notify_all();
+        }
     }
 
     /// Whether a build for the latest generation is still in flight or waiting to be polled.
@@ -231,18 +268,26 @@ impl NativePackLoader {
         if !self.in_flight {
             return None;
         }
-        let shared = self.shared.as_ref()?;
-        let mut state = shared.state.lock().unwrap_or_else(|e| e.into_inner());
-        let target = shared.generation.load(Ordering::Acquire);
-        if state
-            .completed
-            .as_ref()
-            .is_some_and(|done| done.generation == target)
+        #[cfg(target_arch = "wasm32")]
         {
             self.in_flight = false;
-            return state.completed.take().map(|done| done.job);
+            self.ready.take()
         }
-        None
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let shared = self.shared.as_ref()?;
+            let mut state = shared.state.lock().unwrap_or_else(|e| e.into_inner());
+            let target = shared.generation.load(Ordering::Acquire);
+            if state
+                .completed
+                .as_ref()
+                .is_some_and(|done| done.generation == target)
+            {
+                self.in_flight = false;
+                return state.completed.take().map(|done| done.job);
+            }
+            None
+        }
     }
 
     /// Blocks until the latest generation's build finishes and returns it, or `None` if nothing is
@@ -252,25 +297,33 @@ impl NativePackLoader {
         if !self.in_flight {
             return None;
         }
-        let shared = self.shared.as_ref()?;
-        let mut state = shared.state.lock().unwrap_or_else(|e| e.into_inner());
-        let target = shared.generation.load(Ordering::Acquire);
-        loop {
-            if state
-                .completed
-                .as_ref()
-                .is_some_and(|done| done.generation == target)
-            {
-                self.in_flight = false;
-                return state.completed.take().map(|done| done.job);
+        #[cfg(target_arch = "wasm32")]
+        {
+            self.in_flight = false;
+            self.ready.take()
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let shared = self.shared.as_ref()?;
+            let mut state = shared.state.lock().unwrap_or_else(|e| e.into_inner());
+            let target = shared.generation.load(Ordering::Acquire);
+            loop {
+                if state
+                    .completed
+                    .as_ref()
+                    .is_some_and(|done| done.generation == target)
+                {
+                    self.in_flight = false;
+                    return state.completed.take().map(|done| done.job);
+                }
+                if state.shutdown
+                    || (state.pending.is_none() && !state.busy && state.completed.is_none())
+                {
+                    self.in_flight = false;
+                    return None;
+                }
+                state = shared.wake.wait(state).unwrap_or_else(|e| e.into_inner());
             }
-            if state.shutdown
-                || (state.pending.is_none() && !state.busy && state.completed.is_none())
-            {
-                self.in_flight = false;
-                return None;
-            }
-            state = shared.wake.wait(state).unwrap_or_else(|e| e.into_inner());
         }
     }
 }
@@ -278,21 +331,29 @@ impl NativePackLoader {
 impl Drop for NativePackLoader {
     fn drop(&mut self) {
         self.in_flight = false;
-        let Some(shared) = self.shared.take() else {
-            return;
-        };
-        let mut state = shared.state.lock().unwrap_or_else(|e| e.into_inner());
-        shared.generation.fetch_add(1, Ordering::AcqRel);
-        if let Some(cancel) = state.running_cancel.as_ref() {
-            cancel.store(true, Ordering::Release);
+        #[cfg(target_arch = "wasm32")]
+        {
+            self.ready = None;
         }
-        state.pending = None;
-        state.completed = None;
-        state.shutdown = true;
-        shared.wake.notify_all();
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let Some(shared) = self.shared.take() else {
+                return;
+            };
+            let mut state = shared.state.lock().unwrap_or_else(|e| e.into_inner());
+            shared.generation.fetch_add(1, Ordering::AcqRel);
+            if let Some(cancel) = state.running_cancel.as_ref() {
+                cancel.store(true, Ordering::Release);
+            }
+            state.pending = None;
+            state.completed = None;
+            state.shutdown = true;
+            shared.wake.notify_all();
+        }
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn worker_loop(shared: Arc<Shared>) {
     loop {
         let job = {

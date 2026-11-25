@@ -497,9 +497,9 @@ impl Hiz {
                 resource: wgpu::BindingResource::TextureView(&fallback),
             }],
         });
-        let memory = pollster::block_on(memory.pop()).map(|e| e.to_string());
-        let internal = pollster::block_on(internal.pop()).map(|e| e.to_string());
-        let validation = pollster::block_on(validation.pop()).map(|e| e.to_string());
+        let memory = crate::gfx::scope_error(memory.pop()).map(|e| e.to_string());
+        let internal = crate::gfx::scope_error(internal.pop()).map(|e| e.to_string());
+        let validation = crate::gfx::scope_error(validation.pop()).map(|e| e.to_string());
         #[cfg(test)]
         let memory = memory.or_else(|| {
             let left = super::frame_targets::NO_ROOM.get().checked_sub(1)?;
@@ -851,9 +851,11 @@ impl Cull {
             {
                 DepthTest::Early
             }
-            // DirectX 12 has no forced early depth test in wgpu either: the test runs in the
-            // shader there too.
-            wgpu::Backend::Metal | wgpu::Backend::Dx12 => DepthTest::InShader,
+            // DirectX 12 and the browser's WebGPU have no forced early depth test in wgpu either:
+            // the test runs in the shader there too.
+            wgpu::Backend::Metal | wgpu::Backend::Dx12 | wgpu::Backend::BrowserWebGpu => {
+                DepthTest::InShader
+            }
             _ => return None,
         };
         adapter
@@ -1111,9 +1113,9 @@ impl Cull {
             });
             (Some(pipeline), None, layout, depth_layout)
         };
-        let memory = pollster::block_on(memory.pop());
-        let internal = pollster::block_on(internal.pop());
-        let validation = pollster::block_on(validation.pop());
+        let memory = crate::gfx::scope_error(memory.pop());
+        let internal = crate::gfx::scope_error(internal.pop());
+        let validation = crate::gfx::scope_error(validation.pop());
         if let Some(e) = memory.or(internal).or(validation) {
             return Err(e.to_string());
         }
@@ -1164,8 +1166,8 @@ impl Cull {
             always: false,
             min_sections: 0,
         };
-        let memory = pollster::block_on(memory.pop());
-        let validation = pollster::block_on(validation.pop());
+        let memory = crate::gfx::scope_error(memory.pop());
+        let validation = crate::gfx::scope_error(validation.pop());
         if let Some(e) = memory.or(validation) {
             return Err(e.to_string());
         }
@@ -1482,14 +1484,14 @@ impl Cull {
 
     /// The frame's results to read back, started by calling it right after the frame's
     /// submission (on the submit thread, when the frame goes there).
-    pub fn submitted(&mut self) -> Option<impl FnOnce() + Send + 'static> {
+    pub fn submitted(&mut self) -> Option<super::submit::AfterSubmit> {
         let i = self.current.take()?;
         let r = &self.readbacks[i];
         let state = r.state.clone();
         state.store(PENDING, Ordering::Release);
         let (buffer, bytes) = (r.buffer.clone(), r.slots.len() as u64 * 4);
         self.next = (i + 1) % READBACKS;
-        Some(move || {
+        Some(Box::new(move || {
             buffer
                 .slice(..bytes)
                 .map_async(wgpu::MapMode::Read, move |result| {
@@ -1498,7 +1500,7 @@ impl Cull {
                         Ordering::Release,
                     );
                 });
-        })
+        }))
     }
 
     fn make_group(

@@ -279,8 +279,8 @@ impl ModPipelines {
             multiview_mask: None,
             cache: None,
         });
-        let internal = pollster::block_on(internal.pop());
-        let validation = pollster::block_on(validation.pop());
+        let internal = crate::gfx::scope_error(internal.pop());
+        let validation = crate::gfx::scope_error(validation.pop());
         match internal.or(validation) {
             None => Ok((pipeline, texture)),
             Some(error) => Err(error.to_string()),
@@ -299,7 +299,7 @@ impl ModPipelines {
         let validation = device.push_error_scope(wgpu::ErrorFilter::Validation);
         let BuiltTexture::Sprite(name) = texture;
         let Some(rect) = (sources.sprite)(name) else {
-            drop(pollster::block_on(validation.pop()));
+            drop(crate::gfx::scope_error(validation.pop()));
             return Err(format!(
                 "its texture sprite {name}: {}",
                 crate::mod_pipelines::texture_refusal(mod_api::PipelineTextureError::NoSuchSprite)
@@ -329,7 +329,7 @@ impl ModPipelines {
                 },
             ],
         });
-        match pollster::block_on(validation.pop()) {
+        match crate::gfx::scope_error(validation.pop()) {
             None => Ok(group),
             Some(error) => Err(format!("its texture: {error}")),
         }

@@ -3,6 +3,10 @@
 mod budget;
 mod clock;
 mod config;
+#[cfg(not(target_arch = "wasm32"))]
+mod dir;
+#[cfg(target_arch = "wasm32")]
+#[path = "dir_wasm.rs"]
 mod dir;
 mod process;
 mod sink;

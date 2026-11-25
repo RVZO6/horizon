@@ -174,8 +174,6 @@ impl ApplicationHandler for Missing {
             return;
         }
         // Wake now and then for Ctrl+C in the console; redraws come with events.
-        event_loop.set_control_flow(ControlFlow::WaitUntil(
-            Instant::now() + Duration::from_millis(250),
-        ));
+        event_loop.set_control_flow(ControlFlow::wait_duration(Duration::from_millis(250)));
     }
 }

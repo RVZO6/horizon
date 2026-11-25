@@ -315,8 +315,8 @@ pub(super) fn native_pipeline(
         multiview_mask: None,
         cache: None,
     });
-    let internal = pollster::block_on(internal.pop());
-    if let Some(e) = internal.or(pollster::block_on(validation.pop())) {
+    let internal = crate::gfx::scope_error(internal.pop());
+    if let Some(e) = internal.or(crate::gfx::scope_error(validation.pop())) {
         return Err(format!("{}: {e}", stage.file));
     }
     Ok(pipeline)

@@ -355,7 +355,8 @@ impl Passes {
         let validation = device.push_error_scope(wgpu::ErrorFilter::Validation);
         let memory = device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
         let targets = self.build(device, size, surface);
-        let error = pollster::block_on(memory.pop()).or(pollster::block_on(validation.pop()));
+        let error =
+            crate::gfx::scope_error(memory.pop()).or(crate::gfx::scope_error(validation.pop()));
         if let Some(error) = error {
             log::warn!(
                 "Horizon renderer: no video memory for 4x MSAA at {size:?}; terrain draws single-sampled ({error})"

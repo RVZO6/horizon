@@ -39,7 +39,10 @@ impl HeadlessLoop {
     /// for (`WaitUntil`, as the closing save's polls do), else one frame later.
     fn next_step(&self, started: Instant) -> Instant {
         match self.flow.get() {
+            #[cfg(not(target_arch = "wasm32"))]
             ControlFlow::WaitUntil(at) => at,
+            #[cfg(target_arch = "wasm32")]
+            ControlFlow::WaitUntil(_) => started + FRAME,
             ControlFlow::Poll | ControlFlow::Wait => started + FRAME,
         }
     }

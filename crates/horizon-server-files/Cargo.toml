@@ -18,6 +18,10 @@ getrandom = "0.3"
 # Online mode: finding accounts by name (the services' profiles endpoint).
 # Secure chat: the services' public keys arrive base64-encoded.
 base64 = "0.22"
+ureq = { version = "2", default-features = false }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# HTTPS; a browser has no sockets for it.
 ureq = { version = "2", default-features = false, features = ["tls"] }
 
 [lints]

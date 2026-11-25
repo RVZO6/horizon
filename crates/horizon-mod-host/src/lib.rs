@@ -11,7 +11,12 @@ pub use loading::main_with;
 
 /// Establish main-thread stack capacity before compiler-child handling.
 pub use horizon_guest_stack::prepare_main as prepare_main_stack;
+#[cfg(not(target_arch = "wasm32"))]
 pub use horizon_mod_wasm::compile_child;
+#[cfg(target_arch = "wasm32")]
+pub fn compile_child<I: IntoIterator<Item = std::ffi::OsString>>(_args: I) -> Option<i32> {
+    None
+}
 
 /// Handles the private compiler invocation before any game startup work.
 pub fn exit_if_compile_child() {

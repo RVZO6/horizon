@@ -2352,20 +2352,33 @@ impl Game<'_> {
         }
         let name = screenshot_name(&dir, &self.ui.screenshot_messages);
         let renderer = self.renderer.as_mut()?;
-        let path = dir.join(name);
-        // A second shortcut before rendering replaces the queued frame. Release
-        // that request's name: no readback will arrive to finish it.
-        if let Some(replaced) = renderer.screenshot.as_ref() {
-            self.ui.screenshot_messages.retain(|p| *p != replaced.path);
+        let path = dir.join(&name);
+        // The browser saves the frame on screen as a download: its WebGPU canvas lends no copy
+        // to read back, and a readback could not finish inside the frame anyway.
+        #[cfg(target_arch = "wasm32")]
+        {
+            let size = [renderer.config.width, renderer.config.height];
+            horizon_web::save_canvas(&name);
+            self.ui.screenshot_messages.push(path.clone());
+            self.finish_screenshot(&Ok(size), None);
+            return Some(path);
         }
-        renderer.screenshot = Some(horizon_client::gfx::ScreenshotRequest {
-            path: path.clone(),
-            size: None,
-            scaled: true,
-            background: true,
-        });
-        self.ui.screenshot_messages.push(path.clone());
-        Some(path)
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            // A second shortcut before rendering replaces the queued frame. Release
+            // that request's name: no readback will arrive to finish it.
+            if let Some(replaced) = renderer.screenshot.as_ref() {
+                self.ui.screenshot_messages.retain(|p| *p != replaced.path);
+            }
+            renderer.screenshot = Some(horizon_client::gfx::ScreenshotRequest {
+                path: path.clone(),
+                size: None,
+                scaled: true,
+                background: true,
+            });
+            self.ui.screenshot_messages.push(path.clone());
+            Some(path)
+        }
     }
     /// `Minecraft.handleGlobalKeyPress`'s screenshot branch: the
     /// `key.screenshot` mapping (F2 by default) takes the picture before a

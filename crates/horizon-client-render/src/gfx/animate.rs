@@ -538,17 +538,7 @@ impl SpriteAnimator {
     }
 }
 
-/// `animate.wgsl`'s pipeline and the bind group layout of its group 0,
-/// unless the device fails to make the pipeline: an OpenGL driver can list
-/// compute shaders among its extensions while wgpu writes the GLSL version
-/// of its core version, which has none (Mesa's `MESA_GL_VERSION_OVERRIDE`,
-/// older drivers). A device lost between the scopes' pushes answers pipeline
-/// creation with a silent placeholder and reports its invalidity only when
-/// the layout is asked for — inside the scopes that error is caught, outside
-/// them it is uncaptured and panics (#3866).
-fn pipeline(device: &wgpu::Device) -> Option<(wgpu::ComputePipeline, wgpu::BindGroupLayout)> {
-    let validation = device.push_error_scope(wgpu::ErrorFilter::Validation);
-    let internal = device.push_error_scope(wgpu::ErrorFilter::Internal);
+fn make_pipeline(device: &wgpu::Device) -> (wgpu::ComputePipeline, wgpu::BindGroupLayout) {
     let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("Animated sprites"),
         source: wgpu::ShaderSource::Wgsl(include_str!("animate.wgsl").into()),
@@ -562,8 +552,48 @@ fn pipeline(device: &wgpu::Device) -> Option<(wgpu::ComputePipeline, wgpu::BindG
         cache: None,
     });
     let layout = pipeline.get_bind_group_layout(0);
-    let internal = pollster::block_on(internal.pop());
-    match internal.or(pollster::block_on(validation.pop())) {
+    (pipeline, layout)
+}
+
+#[cfg(target_arch = "wasm32")]
+thread_local! {
+    /// Whether the browser makes `animate.wgsl`'s pipeline (`check_web_pipeline`).
+    static WEB_PIPELINE: std::cell::Cell<bool> = const { std::cell::Cell::new(true) };
+}
+
+/// The browser answers an error scope only once its thread returns to it, never inside the
+/// frame that makes the pipeline: `gfx::open_web_device` makes it once before the game starts
+/// and waits for the answer, so a browser that refuses it gets the CPU path.
+#[cfg(target_arch = "wasm32")]
+pub(super) async fn check_web_pipeline(device: &wgpu::Device) {
+    let validation = device.push_error_scope(wgpu::ErrorFilter::Validation);
+    let internal = device.push_error_scope(wgpu::ErrorFilter::Internal);
+    let _ = make_pipeline(device);
+    let internal = internal.pop().await;
+    if let Some(e) = internal.or(validation.pop().await) {
+        log::warn!("Horizon renderer: animated sprites drawn on the CPU ({e})");
+        WEB_PIPELINE.set(false);
+    }
+}
+
+/// `animate.wgsl`'s pipeline and the bind group layout of its group 0,
+/// unless the device fails to make the pipeline: an OpenGL driver can list
+/// compute shaders among its extensions while wgpu writes the GLSL version
+/// of its core version, which has none (Mesa's `MESA_GL_VERSION_OVERRIDE`,
+/// older drivers). A device lost between the scopes' pushes answers pipeline
+/// creation with a silent placeholder and reports its invalidity only when
+/// the layout is asked for — inside the scopes that error is caught, outside
+/// them it is uncaptured and panics (#3866).
+fn pipeline(device: &wgpu::Device) -> Option<(wgpu::ComputePipeline, wgpu::BindGroupLayout)> {
+    #[cfg(target_arch = "wasm32")]
+    if !WEB_PIPELINE.get() {
+        return None;
+    }
+    let validation = device.push_error_scope(wgpu::ErrorFilter::Validation);
+    let internal = device.push_error_scope(wgpu::ErrorFilter::Internal);
+    let (pipeline, layout) = make_pipeline(device);
+    let internal = super::scope_error(internal.pop());
+    match internal.or(super::scope_error(validation.pop())) {
         None => Some((pipeline, layout)),
         Some(e) => {
             log::warn!("Horizon renderer: animated sprites drawn on the CPU ({e})");

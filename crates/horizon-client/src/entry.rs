@@ -8,6 +8,7 @@ pub(crate) mod runtime_environment;
 pub struct Startup {
     launch: LaunchArguments,
     options: game::Options,
+    #[cfg(not(target_arch = "wasm32"))]
     _capture: Option<horizon_mod_package::output::Capture>,
 }
 
@@ -41,11 +42,15 @@ pub fn prepare() -> Startup {
     };
     #[cfg(any(target_os = "linux", target_os = "macos", windows))]
     let capture = horizon_mod_package::holder::acquire(&launch);
-    #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
+    #[cfg(all(
+        not(target_arch = "wasm32"),
+        not(any(target_os = "linux", target_os = "macos", windows))
+    ))]
     let capture = None;
     Startup {
         launch,
         options,
+        #[cfg(not(target_arch = "wasm32"))]
         _capture: capture,
     }
 }
@@ -107,6 +112,7 @@ pub fn start<G>(
     let Startup {
         launch,
         options,
+        #[cfg(not(target_arch = "wasm32"))]
         _capture,
     } = startup;
     runtime_environment::capture(&launch);

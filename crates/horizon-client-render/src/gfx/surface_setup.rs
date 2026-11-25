@@ -247,12 +247,12 @@ pub(super) async fn open_adapter(
         experimental_features: mesh_shader::experimental(features),
         ..Default::default()
     };
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(not(any(target_os = "macos", target_arch = "wasm32")))]
     let opened = match info.backend {
         wgpu::Backend::Vulkan => horizon_hdr::open_vulkan_device(adapter, &desc),
         _ => None,
     };
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_arch = "wasm32"))]
     let opened = None;
     let opened = match opened {
         Some(opened) => opened,

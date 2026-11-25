@@ -350,9 +350,9 @@ fn with_scene<T>(
         })
         .collect();
     let built = build(&layouts);
-    let internal = pollster::block_on(internal.pop());
+    let internal = crate::gfx::scope_error(internal.pop());
     let refused = internal
-        .or(pollster::block_on(validation.pop()))
+        .or(crate::gfx::scope_error(validation.pop()))
         .map(|e| e.to_string());
     let built = match (built, refused) {
         (Ok(built), None) => built,

@@ -130,6 +130,11 @@ pub fn process() -> Counts {
     total
 }
 
+#[cfg(not(target_arch = "wasm32"))]
+use mimalloc::MiMalloc as BackingAlloc;
+#[cfg(target_arch = "wasm32")]
+use std::alloc::System as BackingAlloc;
+
 /// mimalloc that counts every block; a `realloc` counts as a free plus an allocation.
 pub struct CountingAllocator;
 
@@ -138,7 +143,7 @@ unsafe impl GlobalAlloc for CountingAllocator {
     #[inline]
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         // SAFETY: the caller's contract.
-        let block = unsafe { mimalloc::MiMalloc.alloc(layout) };
+        let block = unsafe { BackingAlloc.alloc(layout) };
         if !block.is_null() {
             on_alloc(layout.size());
         }
@@ -147,7 +152,7 @@ unsafe impl GlobalAlloc for CountingAllocator {
     #[inline]
     unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
         // SAFETY: the caller's contract.
-        let block = unsafe { mimalloc::MiMalloc.alloc_zeroed(layout) };
+        let block = unsafe { BackingAlloc.alloc_zeroed(layout) };
         if !block.is_null() {
             on_alloc(layout.size());
         }
@@ -157,12 +162,12 @@ unsafe impl GlobalAlloc for CountingAllocator {
     unsafe fn dealloc(&self, block: *mut u8, layout: Layout) {
         on_free(layout.size());
         // SAFETY: the caller's contract.
-        unsafe { mimalloc::MiMalloc.dealloc(block, layout) }
+        unsafe { BackingAlloc.dealloc(block, layout) }
     }
     #[inline]
     unsafe fn realloc(&self, block: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
         // SAFETY: the caller's contract.
-        let moved = unsafe { mimalloc::MiMalloc.realloc(block, layout, new_size) };
+        let moved = unsafe { BackingAlloc.realloc(block, layout, new_size) };
         if !moved.is_null() {
             on_free(layout.size());
             on_alloc(new_size);

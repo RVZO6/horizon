@@ -110,6 +110,10 @@ impl Loading {
         let attributes = winit::platform::wayland::WindowAttributesExtWayland::with_name(
             attributes, "horizon", "horizon",
         );
+        // The page lays the canvas out (web/www/index.html).
+        #[cfg(target_arch = "wasm32")]
+        let attributes =
+            winit::platform::web::WindowAttributesExtWebSys::with_append(attributes, true);
         // `--offscreen` renders into a texture: its window would only show white.
         let window_step = startup::step("window.create");
         let window = match event_loop.create_window(
@@ -247,6 +251,10 @@ impl Loading {
                 if let Some(gui) = &mut self.gui {
                     gui.atlas.pack_pixels();
                 }
+                // A reconfigured WebGPU canvas shows nothing until it is drawn: draw before the
+                // browser shows it.
+                #[cfg(target_arch = "wasm32")]
+                self.draw();
             }
             Err(e) => self.error = Some(e),
         }
@@ -283,7 +291,9 @@ impl Loading {
             if redraw && let Some(w) = &self.window {
                 w.request_redraw();
             }
-            event_loop.set_control_flow(ControlFlow::WaitUntil(next));
+            event_loop.set_control_flow(ControlFlow::wait_duration(
+                next.saturating_duration_since(Instant::now()),
+            ));
             return;
         }
         if let Some(w) = &self.window {
@@ -293,7 +303,7 @@ impl Loading {
                 w.request_redraw();
             }
         }
-        event_loop.set_control_flow(ControlFlow::Poll);
+        event_loop.set_control_flow(super::event_loop::POLL);
     }
     pub(super) fn draw(&mut self) {
         let Some(size) = self
@@ -320,6 +330,10 @@ impl Loading {
                 Err(e) => log::warn!("Horizon: loading screen frame failed: {e}"),
             }
         }
+        // The page's Mojang Studios screen covers the game's until it has a screen to show; the
+        // rest of the resources load behind the title, as they do natively.
+        #[cfg(target_arch = "wasm32")]
+        horizon_web::loading(self.progress.fraction(), self.gui.is_some());
         if !self.shown {
             self.shown = true;
             startup::mark("loading_screen.shown");
@@ -460,7 +474,18 @@ impl ApplicationHandler for App {
     fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
         match self {
             App::Loading(loading) => loading.window_event(event_loop, id, event),
-            App::Ready(game) => game.window_event(event_loop, id, event),
+            App::Ready(game) => {
+                #[cfg(target_arch = "wasm32")]
+                let resized = matches!(event, WindowEvent::Resized(_));
+                game.window_event(event_loop, id, event);
+                // The resize reconfigured the WebGPU canvas, which shows nothing until drawn:
+                // draw before the browser shows it, not at its next animation frame.
+                #[cfg(target_arch = "wasm32")]
+                if resized {
+                    game.host.draw_now = true;
+                    game.window_event(event_loop, id, WindowEvent::RedrawRequested);
+                }
+            }
         }
     }
     fn device_event(&mut self, event_loop: &ActiveEventLoop, id: DeviceId, event: DeviceEvent) {
@@ -503,7 +528,20 @@ impl ApplicationHandler for App {
         };
         match step {
             Step::Waiting => {}
-            Step::Ready(game) => *self = App::Ready(game),
+            Step::Ready(game) => {
+                // The game's renderer reconfigured the WebGPU canvas, which shows nothing until
+                // drawn: draw before the browser shows it.
+                #[cfg(target_arch = "wasm32")]
+                let game = {
+                    let mut game = game;
+                    if let Some(id) = game.host.window.as_ref().map(|w| w.id()) {
+                        game.host.draw_now = true;
+                        game.window_event(event_loop, id, WindowEvent::RedrawRequested);
+                    }
+                    game
+                };
+                *self = App::Ready(game);
+            }
             Step::Done => event_loop.exit(),
             Step::Failed(e) => {
                 if let App::Loading(loading) = self {
@@ -516,6 +554,13 @@ impl ApplicationHandler for App {
     fn exiting(&mut self, event_loop: &ActiveEventLoop) {
         if let App::Ready(game) = self {
             game.exiting(event_loop);
+        }
+        #[cfg(target_arch = "wasm32")]
+        if let Some(error) = match self {
+            App::Ready(game) => &game.host.error,
+            App::Loading(loading) => &loading.error,
+        } {
+            log::error!("Horizon: {error}");
         }
     }
 }

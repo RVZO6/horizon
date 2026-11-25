@@ -1039,9 +1039,9 @@ impl BoxTest {
                 cache: None,
             })
         });
-        let memory = pollster::block_on(memory.pop());
-        let internal = pollster::block_on(internal.pop());
-        let validation = pollster::block_on(validation.pop());
+        let memory = crate::gfx::scope_error(memory.pop());
+        let internal = crate::gfx::scope_error(internal.pop());
+        let validation = crate::gfx::scope_error(validation.pop());
         if let Some(e) = memory.or(internal).or(validation) {
             log::warn!("Horizon renderer: GPU culling's occlusion test unavailable ({e})");
             return None;
@@ -1193,9 +1193,9 @@ impl GpuCulling {
                 cache: None,
             })
         });
-        let memory = pollster::block_on(memory.pop());
-        let internal = pollster::block_on(internal.pop());
-        let validation = pollster::block_on(validation.pop());
+        let memory = crate::gfx::scope_error(memory.pop());
+        let internal = crate::gfx::scope_error(internal.pop());
+        let validation = crate::gfx::scope_error(validation.pop());
         if let Some(e) = memory.or(internal).or(validation) {
             log::warn!("Horizon renderer: GPU culling unavailable ({e})");
             return None;
@@ -1721,13 +1721,13 @@ impl GpuCulling {
     pub fn forget(&mut self) {
         self.records.all_dirty = true;
     }
-    pub fn submitted(&mut self) -> Option<impl FnOnce() + Send + 'static> {
+    pub fn submitted(&mut self) -> Option<super::submit::AfterSubmit> {
         let i = self.current.take()?;
         let r = &self.readbacks[i];
         let (buffer, state) = (r.buffer.clone(), r.state.clone());
         state.store(PENDING, Ordering::Release);
         self.next = (i + 1) % READBACKS;
-        Some(move || {
+        Some(Box::new(move || {
             buffer
                 .slice(..)
                 .map_async(wgpu::MapMode::Read, move |result| {
@@ -1736,7 +1736,7 @@ impl GpuCulling {
                         Ordering::Release,
                     );
                 });
-        })
+        }))
     }
 
     /// The statistics that came back, their readbacks freed: the newest

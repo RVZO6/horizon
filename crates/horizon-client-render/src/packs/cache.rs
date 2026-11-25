@@ -1,6 +1,7 @@
 //! Overlay reuse validated by source topology and filesystem stamps.
 //! Published output is an owned cache artifact; hits do not traverse its tree.
 use super::{Pack, Source, build_overlay_uncached};
+#[cfg(not(target_arch = "wasm32"))]
 use crate::zip::Zip;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -87,15 +88,23 @@ const WHOLE_ZIP: u64 = 250 << 20;
 /// would take minutes on every check, so by its stamp and its directory: what a
 /// local pack changes when it is replaced, and the directory reads in a moment.
 fn zip_content(hash: &mut Sha256, path: &Path, whole: u64) -> io::Result<()> {
-    let meta = fs::metadata(path)?;
-    match Zip::open(path) {
-        Ok(zip) if meta.len() > whole => {
-            hash.update(meta.len().to_le_bytes());
-            field(hash, format!("{:?}", meta.modified()?).as_bytes());
-            hash.update(zip.directory());
-            Ok(())
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = whole;
+        content(hash, path)
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let meta = fs::metadata(path)?;
+        match Zip::open(path) {
+            Ok(zip) if meta.len() > whole => {
+                hash.update(meta.len().to_le_bytes());
+                field(hash, format!("{:?}", meta.modified()?).as_bytes());
+                hash.update(zip.directory());
+                Ok(())
+            }
+            _ => content(hash, path),
         }
-        _ => content(hash, path),
     }
 }
 /// `path`'s stamp; `read` lets platforms without a change timestamp hash a file's bytes.

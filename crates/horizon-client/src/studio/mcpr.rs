@@ -9,8 +9,12 @@
 //! - Optional `horizon/mod-data/<package id>.bin`: one opaque entry per mod.
 //!   A legacy `camera.json` is an alias for `replay_studio`'s entry.
 
-use crate::file_id::{FileIdentity, reparse_point};
+use crate::file_id::FileIdentity;
+#[cfg(not(target_arch = "wasm32"))]
+use crate::file_id::reparse_point;
+#[cfg(not(target_arch = "wasm32"))]
 use cap_fs_ext::{FollowSymlinks, OpenOptionsFollowExt};
+#[cfg(not(target_arch = "wasm32"))]
 use cap_std::fs::{Dir, OpenOptions as CapOpenOptions};
 use horizon_protocol::buf::{Reader, write_varint};
 use mod_api::REPLAY_EDIT_MAX_BYTES;
@@ -640,6 +644,7 @@ impl ArchiveRevision {
         )
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     fn check(self, parent: &Dir, name: &Path) -> io::Result<()> {
         if !parent.symlink_metadata(name)?.is_file() {
             return Err(Self::stale());
@@ -725,6 +730,19 @@ fn mod_data_entry(owner: &str) -> io::Result<String> {
 /// Rewrite one entry (and remove its legacy alias, if any). Copy unrelated
 /// entries in compressed form: neither the packet stream nor unknown ZIP
 /// entries are inflated or recompressed. Playback keeps its own stream open.
+#[cfg(target_arch = "wasm32")]
+fn replace_entry(
+    _archive: &mut zip::ZipArchive<File>,
+    _revision: ArchiveRevision,
+    _path: &Path,
+    _name: &str,
+    _legacy: Option<&str>,
+    _contents: Option<&[u8]>,
+) -> io::Result<(zip::ZipArchive<File>, ArchiveRevision)> {
+    Err(io::Error::from(io::ErrorKind::Unsupported))
+}
+
+#[cfg(not(target_arch = "wasm32"))]
 fn replace_entry(
     archive: &mut zip::ZipArchive<File>,
     revision: ArchiveRevision,

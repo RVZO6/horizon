@@ -240,6 +240,9 @@ pub(super) fn install_registration_data(root: &Path) -> horizon_client::Result<(
         use std::os::windows::ffi::OsStrExt;
         mod_api::InstanceDirectory::Windows(directory.as_os_str().encode_wide().collect())
     };
+    #[cfg(not(any(unix, windows)))]
+    let directory =
+        mod_api::InstanceDirectory::Unix(directory.to_string_lossy().into_owned().into_bytes());
     (horizon_engine_slots::platform()?.install_registration_data)(
         mod_api::__private::RegistrationData::new(
             builtin_registry_names(root)?,

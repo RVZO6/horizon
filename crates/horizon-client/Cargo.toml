@@ -61,7 +61,7 @@ horizon-narrator = { path = "../horizon-narrator" }
 # Their runtime is the `mods` feature.
 # Keep `horizon-mod-package` features aligned with `horizon-client-lib` so alternating client and
 # client-lib builds/tests unify the same dependency set and reuse compiled artifacts.
-horizon-mod-package = { path = "../horizon-mod-package", default-features = false, features = ["index", "junction", "runtime-process"] }
+horizon-mod-package = { path = "../horizon-mod-package", default-features = false, features = ["index", "junction"] }
 wgpu = { version = "30.0.1", default-features = false, features = ["std", "parking_lot", "vulkan", "metal", "wgsl", "naga-ir"] }
 winit = "0.30.13"
 pollster = "0.4"
@@ -96,12 +96,7 @@ gilrs = { version = "0.11", optional = true }
 # over HID (gilrs only reads them).
 horizon-dualsense = { path = "../horizon-dualsense", optional = true }
 # HTTPS to the Minecraft services (online-mode session join).
-ureq = { version = "2", default-features = false, features = ["tls"] }
-# `LevelStorageAccess.estimateDiskSpace`: usable disk space, without unsafe code on Windows.
-fs4 = { version = "1.1.0", default-features = false, features = ["sync"] }
-# Mod file roots are descriptor-bound: no symlink race can leave a mod's area.
-cap-std = "3"
-cap-fs-ext = "3"
+ureq = { version = "2", default-features = false }
 
 [target.'cfg(unix)'.dependencies]
 # The server thread's CPU time per tick (`HORIZON_SPIKES`, spans.rs).
@@ -123,7 +118,24 @@ objc2-foundation = { version = "0.3", default-features = false, features = ["std
 [target.'cfg(target_os = "android")'.dependencies]
 winit = { version = "0.30.13", features = ["android-native-activity"] }
 
-[target.'cfg(not(target_os = "macos"))'.dependencies]
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# HTTPS to the Minecraft services; a browser has no sockets for it.
+ureq = { version = "2", default-features = false, features = ["tls"] }
+horizon-mod-package = { path = "../horizon-mod-package", default-features = false, features = ["runtime-process"] }
+# `LevelStorageAccess.estimateDiskSpace`: usable disk space, without unsafe code on Windows.
+fs4 = { version = "1.1.0", default-features = false, features = ["sync"] }
+# Mod file roots are descriptor-bound: no symlink race can leave a mod's area.
+cap-std = "3"
+cap-fs-ext = "3"
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+# The browser build (web/README.md): std's hooks, the page's entry point and WebGPU/WebGL2.
+horizon-web = { path = "../horizon-web" }
+wasm-bindgen = "0.2.129"
+wasm-bindgen-futures = "0.4.79"
+wgpu = { version = "30.0.1", default-features = false, features = ["webgpu", "webgl"] }
+
+[target.'cfg(not(any(target_os = "macos", target_arch = "wasm32")))'.dependencies]
 # OpenGL (WGL on Windows, EGL on Linux), the last fallback, for GPUs with no Vulkan or
 # DirectX 12 driver (`graphicsApi`, graphics.rs).
 wgpu = { version = "30.0.1", default-features = false, features = ["gles"] }

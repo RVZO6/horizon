@@ -325,7 +325,7 @@ pub use horizon_client_core::key_display::{
 /// A key event: what the layout writes on its key, without modifiers, names
 /// that key from now on (`key_display::learn_layout`), so an AZERTY player's
 /// Q key shows A.
-#[cfg(not(target_os = "android"))]
+#[cfg(not(any(target_os = "android", target_arch = "wasm32")))]
 pub fn learn_layout(event: &winit::event::KeyEvent) {
     use winit::keyboard::{Key, PhysicalKey};
     use winit::platform::modifier_supplement::KeyEventExtModifierSupplement;
@@ -343,8 +343,8 @@ pub fn learn_layout(event: &winit::event::KeyEvent) {
     }
 }
 
-// Android does not expose winit's unmodified key extension.
-#[cfg(target_os = "android")]
+// Android and wasm32 do not expose winit's unmodified key extension.
+#[cfg(any(target_os = "android", target_arch = "wasm32"))]
 pub fn learn_layout(_event: &winit::event::KeyEvent) {}
 
 /// Vanilla's name for the key the layout produced (`InputEvent.Key.getKeycode`):
@@ -391,13 +391,13 @@ pub fn raw_key_code(physical: winit::keyboard::PhysicalKey) -> u32 {
             NativeKeyCode::MacOS(c) | NativeKeyCode::Windows(c) => c.into(),
             NativeKeyCode::Unidentified => 0,
         },
-        #[cfg(not(target_os = "android"))]
+        #[cfg(not(any(target_os = "android", target_arch = "wasm32")))]
         PhysicalKey::Code(_) => {
             use winit::platform::scancode::PhysicalKeyExtScancode;
             physical.to_scancode().unwrap_or(0)
         }
-        // Android does not expose winit's platform scancode extension.
-        #[cfg(target_os = "android")]
+        // Android and wasm32 do not expose winit's platform scancode extension.
+        #[cfg(any(target_os = "android", target_arch = "wasm32"))]
         PhysicalKey::Code(_) => 0,
     }
 }

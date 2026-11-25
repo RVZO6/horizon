@@ -715,8 +715,8 @@ impl NativeMaterial {
             &stage.source,
             kept.as_ref().map_or(&frame.layout, |k| &k.layout),
         );
-        let internal = pollster::block_on(internal.pop());
-        if let Some(e) = internal.or(pollster::block_on(validation.pop())) {
+        let internal = crate::gfx::scope_error(internal.pop());
+        if let Some(e) = internal.or(crate::gfx::scope_error(validation.pop())) {
             return Err(format!("{}: {e}", stage.file));
         }
         let pipelines = built?;
@@ -1010,8 +1010,8 @@ impl NativeMaterial {
             let depth = prepass.then(|| msaa_with("horizon_material_fs_depth_msaa", Depth::Write));
             (colour, depth)
         });
-        let msaa_internal = pollster::block_on(msaa_internal.pop());
-        let msaa = match msaa_internal.or(pollster::block_on(msaa_scope.pop())) {
+        let msaa_internal = crate::gfx::scope_error(msaa_internal.pop());
+        let msaa = match msaa_internal.or(crate::gfx::scope_error(msaa_scope.pop())) {
             Some(e) => {
                 log::warn!(
                     "{}: no 4x MSAA pipelines, it draws single-sampled ({e})",

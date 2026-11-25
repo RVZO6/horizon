@@ -276,20 +276,30 @@ impl FrameGen {
         if self.presenter.as_ref().is_some_and(|p| p.config != *config) {
             self.presenter = None;
         }
-        let presenter = self.presenter.get_or_insert_with(|| {
-            Presenter::start(device, queue, surface.clone(), window.clone(), config)
-        });
-        // A closed channel: the thread died.
-        let pair = if presenter.failed() {
-            None
-        } else {
-            presenter.free.recv().ok().zip(presenter.free.recv().ok())
-        };
-        if pair.is_none() {
+        #[cfg(target_arch = "wasm32")]
+        {
+            let _ = (queue, surface, window);
             self.stop();
             self.paused = true;
+            return None;
         }
-        pair
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let presenter = self.presenter.get_or_insert_with(|| {
+                Presenter::start(device, queue, surface.clone(), window.clone(), config)
+            });
+            // A closed channel: the thread died.
+            let pair = if presenter.failed() {
+                None
+            } else {
+                presenter.free.recv().ok().zip(presenter.free.recv().ok())
+            };
+            if pair.is_none() {
+                self.stop();
+                self.paused = true;
+            }
+            pair
+        }
     }
 
     /// The world's target at the screen's size this frame, where `Post::finish` draws, in
@@ -662,6 +672,7 @@ struct Presenter {
 }
 
 impl Presenter {
+    #[cfg(not(target_arch = "wasm32"))]
     fn start(
         device: &wgpu::Device,
         queue: &wgpu::Queue,

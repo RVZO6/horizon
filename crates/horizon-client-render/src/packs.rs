@@ -33,7 +33,13 @@ impl Source {
             Self::Dir(root) => Ok(crate::resource_source::ResourceSource::directory(
                 root.clone(),
             )),
+            #[cfg(not(target_arch = "wasm32"))]
             Self::Zip(path) => crate::resource_source::ResourceSource::archive(path),
+            #[cfg(target_arch = "wasm32")]
+            Self::Zip(_) => Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "archive resource packs are unavailable on wasm32",
+            )),
             Self::Opened(source) => Ok(source.clone()),
         }
     }

@@ -211,13 +211,18 @@ pub fn read_manifest(path: &Path) -> Result<crate::Manifest, String> {
             .read_to_string(&mut text)
             .map_err(|e| format!("{}: {e}", crate::manifest::MANIFEST))?;
     } else {
-        let file = std::fs::File::open(path).map_err(|e| e.to_string())?;
-        let mut zip = zip::ZipArchive::new(file).map_err(|e| e.to_string())?;
-        zip.by_name(crate::manifest::MANIFEST)
-            .map_err(|e| format!("{}: {e}", crate::manifest::MANIFEST))?
-            .take(crate::manifest::MAX_MANIFEST + 1)
-            .read_to_string(&mut text)
-            .map_err(|e| format!("{}: {e}", crate::manifest::MANIFEST))?;
+        #[cfg(target_arch = "wasm32")]
+        return Err("archive I/O is unavailable on wasm32".into());
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let file = std::fs::File::open(path).map_err(|e| e.to_string())?;
+            let mut zip = zip::ZipArchive::new(file).map_err(|e| e.to_string())?;
+            zip.by_name(crate::manifest::MANIFEST)
+                .map_err(|e| format!("{}: {e}", crate::manifest::MANIFEST))?
+                .take(crate::manifest::MAX_MANIFEST + 1)
+                .read_to_string(&mut text)
+                .map_err(|e| format!("{}: {e}", crate::manifest::MANIFEST))?;
+        }
     }
     if text.len() as u64 > crate::manifest::MAX_MANIFEST {
         return Err(format!(
@@ -236,13 +241,21 @@ pub fn read_manifest(path: &Path) -> Result<crate::Manifest, String> {
 /// Whether the `.hmod` at `path` is a native mod in the format from before the `.hmod` SDK
 /// ([`crate::manifest::LEGACY_PATHS`]): it can't be built until its author makes it again.
 pub fn legacy_format(path: &Path) -> bool {
-    let Ok(file) = std::fs::File::open(path) else {
-        return false;
-    };
-    zip::ZipArchive::new(file).is_ok_and(|zip| {
-        zip.file_names()
-            .any(|name| name.is_ok_and(|name| crate::manifest::legacy_path(&name)))
-    })
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = path;
+        false
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let Ok(file) = std::fs::File::open(path) else {
+            return false;
+        };
+        zip::ZipArchive::new(file).is_ok_and(|zip| {
+            zip.file_names()
+                .any(|name| name.is_ok_and(|name| crate::manifest::legacy_path(&name)))
+        })
+    }
 }
 
 /// The manifest id of the flat `.hmod` at `path` when its manifest declares the removed `[[inject]]`
@@ -250,19 +263,27 @@ pub fn legacy_format(path: &Path) -> bool {
 /// the on/off list, keyed by that id, say whether the player still wants it. An id a manifest could
 /// not have ([`crate::manifest::valid_mod_id`]) gives none: it would be written into that list.
 pub fn retired_inject(path: &Path) -> Option<String> {
-    let mut zip = zip::ZipArchive::new(std::fs::File::open(path).ok()?).ok()?;
-    let mut text = String::new();
-    zip.by_name(crate::manifest::MANIFEST)
-        .ok()?
-        .take(crate::manifest::MAX_MANIFEST + 1)
-        .read_to_string(&mut text)
-        .ok()?;
-    let table = toml::from_str::<toml::Table>(&text).ok()?;
-    if !table.contains_key("inject") {
-        return None;
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = path;
+        None
     }
-    let id = table.get("id")?.as_str()?;
-    crate::manifest::valid_mod_id(id).then(|| id.to_owned())
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let mut zip = zip::ZipArchive::new(std::fs::File::open(path).ok()?).ok()?;
+        let mut text = String::new();
+        zip.by_name(crate::manifest::MANIFEST)
+            .ok()?
+            .take(crate::manifest::MAX_MANIFEST + 1)
+            .read_to_string(&mut text)
+            .ok()?;
+        let table = toml::from_str::<toml::Table>(&text).ok()?;
+        if !table.contains_key("inject") {
+            return None;
+        }
+        let id = table.get("id")?.as_str()?;
+        crate::manifest::valid_mod_id(id).then(|| id.to_owned())
+    }
 }
 
 /// A flat native mod and its checked, archive-relative files.
@@ -273,34 +294,42 @@ pub struct Bundle {
 
 impl Bundle {
     pub fn read(path: &Path) -> Result<Self, String> {
-        let file = std::fs::File::open(path).map_err(|e| e.to_string())?;
-        let mut zip = zip::ZipArchive::new(file).map_err(|e| e.to_string())?;
-        let package = crate::Package::read_zip(&mut zip)?;
-        if !package.is_native() {
-            return Err("not a native package".into());
+        #[cfg(target_arch = "wasm32")]
+        {
+            let _ = path;
+            Err("archive I/O is unavailable on wasm32".into())
         }
-        let mut files = BTreeMap::new();
-        for i in 0..zip.len() {
-            let mut entry = zip.by_index(i).map_err(|e| e.to_string())?;
-            if entry.is_dir() {
-                continue;
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let file = std::fs::File::open(path).map_err(|e| e.to_string())?;
+            let mut zip = zip::ZipArchive::new(file).map_err(|e| e.to_string())?;
+            let package = crate::Package::read_zip(&mut zip)?;
+            if !package.is_native() {
+                return Err("not a native package".into());
             }
-            let name = entry.name().map_err(|e| e.to_string())?.into_owned();
-            let size = entry.size();
-            let mut bytes = Vec::new();
-            (&mut entry)
-                .take(size.saturating_add(1))
-                .read_to_end(&mut bytes)
-                .map_err(|e| format!("{name}: {e}"))?;
-            if bytes.len() as u64 != size {
-                return Err(format!("{name}: invalid expanded size"));
+            let mut files = BTreeMap::new();
+            for i in 0..zip.len() {
+                let mut entry = zip.by_index(i).map_err(|e| e.to_string())?;
+                if entry.is_dir() {
+                    continue;
+                }
+                let name = entry.name().map_err(|e| e.to_string())?.into_owned();
+                let size = entry.size();
+                let mut bytes = Vec::new();
+                (&mut entry)
+                    .take(size.saturating_add(1))
+                    .read_to_end(&mut bytes)
+                    .map_err(|e| format!("{name}: {e}"))?;
+                if bytes.len() as u64 != size {
+                    return Err(format!("{name}: invalid expanded size"));
+                }
+                files.insert(name, bytes);
             }
-            files.insert(name, bytes);
+            Ok(Self {
+                manifest: package.manifest,
+                files,
+            })
         }
-        Ok(Self {
-            manifest: package.manifest,
-            files,
-        })
     }
 
     /// Registry facts from the one package manifest, never Cargo metadata.

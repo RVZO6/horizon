@@ -7,10 +7,9 @@
 //! [`check_file`] is what a file must pass before it is installed: its size
 //! and hash are the ones the index lists, its signature verifies against the
 //! project's pinned key, and what its own manifest says matches the entry.
-use crate::{
-    Capability, Package,
-    modpack::{self, Modpack},
-};
+#[cfg(not(target_arch = "wasm32"))]
+use crate::modpack::{self, Modpack};
+use crate::{Capability, Package};
 use mod_vocab::Side;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -872,7 +871,13 @@ impl Facts {
                 self.side,
                 names(&self.capabilities)
             ),
-            Kind::Modpack => format!("its {} isn't what the index lists", modpack::MANIFEST),
+            Kind::Modpack => {
+                #[cfg(not(target_arch = "wasm32"))]
+                let manifest = modpack::MANIFEST;
+                #[cfg(target_arch = "wasm32")]
+                let manifest = "horizon-modpack.toml";
+                format!("its {manifest} isn't what the index lists")
+            }
             Kind::Shader => format!(
                 "its {} ({} {}, shader API {}) isn't what the index lists",
                 horizon_shader_api::MANIFEST,
@@ -913,15 +918,23 @@ pub fn inspect(kind: &Kind, path: &Path) -> Result<Facts, String> {
             })
         }
         Kind::Modpack => {
-            let m = Modpack::read(path)?.manifest;
-            Ok(Facts {
-                requires: m.mods.iter().map(modpack::PackMod::requirement).collect(),
-                id: Some(m.id),
-                version: Some(m.version),
-                api: m.format.to_string(),
-                game: Some(m.game),
-                ..Facts::default()
-            })
+            #[cfg(target_arch = "wasm32")]
+            {
+                let _ = path;
+                Err("archive I/O is unavailable on wasm32".into())
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            {
+                let m = Modpack::read(path)?.manifest;
+                Ok(Facts {
+                    requires: m.mods.iter().map(modpack::PackMod::requirement).collect(),
+                    id: Some(m.id),
+                    version: Some(m.version),
+                    api: m.format.to_string(),
+                    game: Some(m.game),
+                    ..Facts::default()
+                })
+            }
         }
         Kind::ResourcePack => Ok(Facts {
             api: check_resource_pack(path)?,
@@ -960,11 +973,20 @@ pub fn inspect(kind: &Kind, path: &Path) -> Result<Facts, String> {
 /// object, and only plain paths. Returns its pack format (`pack_format`, or
 /// `min_format` in newer packs), empty when it names none.
 fn check_resource_pack(path: &Path) -> Result<String, String> {
-    let (mut zip, _) = plain_zip(path)?;
-    pack_format(&mut zip)
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = path;
+        Err("archive I/O is unavailable on wasm32".into())
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let (mut zip, _) = plain_zip(path)?;
+        pack_format(&mut zip)
+    }
 }
 
 /// A zip whose paths are all plain, and those paths.
+#[cfg(not(target_arch = "wasm32"))]
 fn plain_zip(path: &Path) -> Result<(zip::ZipArchive<std::fs::File>, Vec<String>), String> {
     let file = std::fs::File::open(path).map_err(|e| format!("{}: {e}", path.display()))?;
     let mut zip = zip::ZipArchive::new(file).map_err(|e| e.to_string())?;
@@ -987,41 +1009,66 @@ fn plain_zip(path: &Path) -> Result<(zip::ZipArchive<std::fs::File>, Vec<String>
 
 /// A data pack: a resource pack's rules, and a `data/` folder at the root.
 fn check_data_pack(path: &Path) -> Result<String, String> {
-    let (mut zip, names) = plain_zip(path)?;
-    if !names.iter().any(|n| n.starts_with("data/")) {
-        return Err("no data/ folder at the zip's root: not a data pack".into());
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = path;
+        Err("archive I/O is unavailable on wasm32".into())
     }
-    pack_format(&mut zip)
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let (mut zip, names) = plain_zip(path)?;
+        if !names.iter().any(|n| n.starts_with("data/")) {
+            return Err("no data/ folder at the zip's root: not a data pack".into());
+        }
+        pack_format(&mut zip)
+    }
 }
 
 /// A `shaders/`-folder shader pack: plain paths and a `shaders/` folder at the root. Its format
 /// has no version of its own: the facts' `api` is empty.
 fn check_shader_folder_pack(path: &Path) -> Result<String, String> {
-    let (_, names) = plain_zip(path)?;
-    if !names.iter().any(|n| n.starts_with("shaders/")) {
-        return Err("no shaders/ folder at the zip's root: not a shader pack".into());
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = path;
+        Err("archive I/O is unavailable on wasm32".into())
     }
-    Ok(String::new())
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let (_, names) = plain_zip(path)?;
+        if !names.iter().any(|n| n.starts_with("shaders/")) {
+            return Err("no shaders/ folder at the zip's root: not a shader pack".into());
+        }
+        Ok(String::new())
+    }
 }
 
 /// What a zip's file is, by its content: a `shaders/` folder makes a shader pack, a `data/` folder
 /// without `assets/` a data pack, anything else a resource pack (checked as one).
 pub fn zip_kind(path: &Path) -> Kind {
-    let Ok((_, names)) = plain_zip(path) else {
-        return Kind::ResourcePack;
-    };
-    let root = |dir: &str| names.iter().any(|n| n.starts_with(dir));
-    if root("shaders/") {
-        Kind::ShaderPack
-    } else if root("data/") && !root("assets/") {
-        Kind::DataPack
-    } else {
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = path;
         Kind::ResourcePack
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let Ok((_, names)) = plain_zip(path) else {
+            return Kind::ResourcePack;
+        };
+        let root = |dir: &str| names.iter().any(|n| n.starts_with(dir));
+        if root("shaders/") {
+            Kind::ShaderPack
+        } else if root("data/") && !root("assets/") {
+            Kind::DataPack
+        } else {
+            Kind::ResourcePack
+        }
     }
 }
 
 /// `pack.mcmeta`'s pack format (`pack_format`, or `min_format` in newer packs), empty when it
 /// names none; refused when it has no `pack` object.
+#[cfg(not(target_arch = "wasm32"))]
 fn pack_format(zip: &mut zip::ZipArchive<std::fs::File>) -> Result<String, String> {
     let mut meta = String::new();
     zip.by_name("pack.mcmeta")

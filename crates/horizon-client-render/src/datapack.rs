@@ -3,6 +3,7 @@
 //! line continuation), function tags and predicates.
 use crate::resource_source::ResourceSource;
 mod slot_sources;
+#[cfg(not(target_arch = "wasm32"))]
 use crate::zip::Zip;
 use std::{
     collections::BTreeMap,
@@ -155,17 +156,20 @@ pub(crate) fn discover_folder_with(
                 source: ResourceSource::directory(path),
                 selection: None,
             });
-        } else if path
-            .file_name()
-            .is_some_and(|n| n.to_string_lossy().ends_with(".zip"))
-            && let Ok(z) = Zip::open(&path)
-            && z.contains("pack.mcmeta")
-        {
-            packs.push(DataPack {
-                id: format!("file/{name}"),
-                source: ResourceSource::opened_archive(z),
-                selection: None,
-            });
+        } else {
+            #[cfg(not(target_arch = "wasm32"))]
+            if path
+                .file_name()
+                .is_some_and(|n| n.to_string_lossy().ends_with(".zip"))
+                && let Ok(z) = Zip::open(&path)
+                && z.contains("pack.mcmeta")
+            {
+                packs.push(DataPack {
+                    id: format!("file/{name}"),
+                    source: ResourceSource::opened_archive(z),
+                    selection: None,
+                });
+            }
         }
     }
     packs.sort_by(|a, b| a.id.cmp(&b.id));

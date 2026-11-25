@@ -6,11 +6,12 @@
 //! ab_glyph). Glyphs drawn at run time go into a reserved atlas region.
 //! Vanilla glyph metrics (ascent, oversampling, advances, bold/shadow
 //! offsets), styled drawing and StringSplitter-style line wrapping.
+#[cfg(not(target_arch = "wasm32"))]
+use crate::zip::Zip;
 use crate::{
     hud::Rect,
     resource_source::ResourceSource,
     text::{Span, Style, Text, legacy_format},
-    zip::Zip,
 };
 use ab_glyph::{Font as _, ScaleFont as _};
 use std::{
@@ -1199,31 +1200,65 @@ fn load_hex(source: &ResourceSource, key: &UnihexKey) -> HexLoad {
     let Some(path) = key.path.as_deref() else {
         return HexLoad::Complete(HexTable::empty());
     };
-    let Ok(zip) = source.read(path).and_then(Zip::from_bytes) else {
-        return HexLoad::Failed;
-    };
-    let names: Vec<String> = zip
-        .names()
-        .filter(|n| n.ends_with(".hex"))
-        .map(str::to_owned)
-        .collect();
     let mut entries = Vec::new();
     let mut rows = Vec::new();
     let mut by_cp = crate::fast_hash::FxHashMap::default();
     let mut has_dead_rows = false;
     let mut complete = true;
-    for name in names {
-        let Ok(bytes) = zip.read(&name) else {
-            complete = false;
-            continue;
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let Ok(zip) = source.read(path).and_then(Zip::from_bytes) else {
+            return HexLoad::Failed;
         };
-        parse_hex(
-            &bytes,
-            &mut entries,
-            &mut rows,
-            &mut by_cp,
-            &mut has_dead_rows,
-        );
+        let names: Vec<String> = zip
+            .names()
+            .filter(|n| n.ends_with(".hex"))
+            .map(str::to_owned)
+            .collect();
+        for name in names {
+            let Ok(bytes) = zip.read(&name) else {
+                complete = false;
+                continue;
+            };
+            parse_hex(
+                &bytes,
+                &mut entries,
+                &mut rows,
+                &mut by_cp,
+                &mut has_dead_rows,
+            );
+        }
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        use std::io::Read as _;
+        let Ok(raw) = source.read(path) else {
+            return HexLoad::Failed;
+        };
+        let Ok(mut archive) = zip::ZipArchive::new(std::io::Cursor::new(raw)) else {
+            return HexLoad::Failed;
+        };
+        for i in 0..archive.len() {
+            let Ok(mut file) = archive.by_index(i) else {
+                complete = false;
+                continue;
+            };
+            if !file.name().is_ok_and(|name| name.ends_with(".hex")) {
+                continue;
+            }
+            let mut bytes = Vec::new();
+            if file.read_to_end(&mut bytes).is_err() {
+                complete = false;
+                continue;
+            }
+            parse_hex(
+                &bytes,
+                &mut entries,
+                &mut rows,
+                &mut by_cp,
+                &mut has_dead_rows,
+            );
+        }
     }
     let mut wide_bounds_map: crate::fast_hash::FxHashMap<u32, (u32, u32)> =
         crate::fast_hash::FxHashMap::default();

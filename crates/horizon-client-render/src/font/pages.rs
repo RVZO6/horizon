@@ -113,7 +113,60 @@ struct Textures {
 struct Texture {
     kind: PageKind,
     pending: Vec<Patch>,
+    #[cfg(not(target_arch = "wasm32"))]
     gpu: Option<(wgpu::Texture, wgpu::TextureView)>,
+    #[cfg(target_arch = "wasm32")]
+    gpu: Option<u64>,
+}
+
+#[cfg(target_arch = "wasm32")]
+mod web_gpu {
+    use std::cell::RefCell;
+    use std::collections::HashMap;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static NEXT_ID: AtomicU64 = AtomicU64::new(1);
+
+    thread_local! {
+        static HANDLES: RefCell<HashMap<u64, (wgpu::Texture, wgpu::TextureView)>> =
+            RefCell::new(HashMap::new());
+    }
+
+    pub(super) fn next_id() -> u64 {
+        NEXT_ID.fetch_add(1, Ordering::Relaxed)
+    }
+
+    pub(super) fn with_view<R>(id: u64, f: impl FnOnce(&wgpu::TextureView) -> R) -> Option<R> {
+        HANDLES.with(|handles| handles.borrow().get(&id).map(|(_, view)| f(view)))
+    }
+
+    pub(super) fn with_or_insert<R>(
+        slot: &mut Option<u64>,
+        create: impl FnOnce() -> (wgpu::Texture, wgpu::TextureView),
+        f: impl FnOnce(&wgpu::Texture) -> R,
+    ) -> R {
+        HANDLES.with(|handles| {
+            let mut map = handles.borrow_mut();
+            let id = *slot.get_or_insert_with(next_id);
+            let (texture, _) = map.entry(id).or_insert_with(create);
+            f(texture)
+        })
+    }
+
+    pub(super) fn remove(id: u64) {
+        HANDLES.with(|handles| {
+            handles.borrow_mut().remove(&id);
+        });
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+impl Drop for Texture {
+    fn drop(&mut self) {
+        if let Some(id) = self.gpu.take() {
+            web_gpu::remove(id);
+        }
+    }
 }
 
 /// One resource generation's pages, shared by GUI and world pipelines. Pixel buffers
@@ -156,8 +209,18 @@ impl FontPages {
     ) {
         let textures = self.0.lock().unwrap();
         for texture in textures.pages.iter().skip(skip) {
-            let Some((_, view)) = &texture.gpu else { break };
-            f(texture.kind, view);
+            #[cfg(not(target_arch = "wasm32"))]
+            {
+                let Some((_, view)) = &texture.gpu else { break };
+                f(texture.kind, view);
+            }
+            #[cfg(target_arch = "wasm32")]
+            {
+                let Some(id) = texture.gpu else { break };
+                if web_gpu::with_view(id, |view| f(texture.kind, view)).is_none() {
+                    break;
+                }
+            }
         }
     }
 
@@ -176,7 +239,8 @@ impl FontPages {
         let Textures { pages, dirty, .. } = &mut *textures;
         for index in dirty.drain(..) {
             let page = &mut pages[index];
-            let (texture, _) = page.gpu.get_or_insert_with(|| {
+            let kind = page.kind;
+            let create = || {
                 let texture = device.create_texture(&wgpu::TextureDescriptor {
                     label: Some("Resource pack font page"),
                     size: wgpu::Extent3d {
@@ -187,7 +251,7 @@ impl FontPages {
                     mip_level_count: 1,
                     sample_count: 1,
                     dimension: wgpu::TextureDimension::D2,
-                    format: match page.kind {
+                    format: match kind {
                         PageKind::Color => wgpu::TextureFormat::Rgba8Unorm,
                         PageKind::Grayscale => wgpu::TextureFormat::R8Unorm,
                     },
@@ -196,31 +260,45 @@ impl FontPages {
                 });
                 let view = texture.create_view(&Default::default());
                 (texture, view)
-            });
-            for patch in page.pending.drain(..) {
-                queue.write_texture(
-                    wgpu::TexelCopyTextureInfo {
-                        texture,
-                        origin: wgpu::Origin3d {
-                            x: patch.x,
-                            y: patch.y,
-                            z: 0,
+            };
+            let write_patches = |texture: &wgpu::Texture, pending: &mut Vec<Patch>| {
+                for patch in pending.drain(..) {
+                    queue.write_texture(
+                        wgpu::TexelCopyTextureInfo {
+                            texture,
+                            origin: wgpu::Origin3d {
+                                x: patch.x,
+                                y: patch.y,
+                                z: 0,
+                            },
+                            mip_level: 0,
+                            aspect: wgpu::TextureAspect::All,
                         },
-                        mip_level: 0,
-                        aspect: wgpu::TextureAspect::All,
-                    },
-                    &patch.rgba,
-                    wgpu::TexelCopyBufferLayout {
-                        offset: 0,
-                        bytes_per_row: Some(patch.width * page.kind.pixel_size()),
-                        rows_per_image: None,
-                    },
-                    wgpu::Extent3d {
-                        width: patch.width,
-                        height: patch.height,
-                        depth_or_array_layers: 1,
-                    },
-                );
+                        &patch.rgba,
+                        wgpu::TexelCopyBufferLayout {
+                            offset: 0,
+                            bytes_per_row: Some(patch.width * kind.pixel_size()),
+                            rows_per_image: None,
+                        },
+                        wgpu::Extent3d {
+                            width: patch.width,
+                            height: patch.height,
+                            depth_or_array_layers: 1,
+                        },
+                    );
+                }
+            };
+            #[cfg(not(target_arch = "wasm32"))]
+            {
+                let (texture, _) = page.gpu.get_or_insert_with(create);
+                write_patches(texture, &mut page.pending);
+            }
+            #[cfg(target_arch = "wasm32")]
+            {
+                let pending = &mut page.pending;
+                web_gpu::with_or_insert(&mut page.gpu, create, |texture| {
+                    write_patches(texture, pending);
+                });
             }
         }
     }

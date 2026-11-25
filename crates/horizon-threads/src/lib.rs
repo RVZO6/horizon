@@ -590,8 +590,14 @@ pub fn catch_stop_signals() {}
 /// On Linux it samples allocations while a capture runs (`heap_sample`).
 #[cfg(all(target_os = "linux", not(feature = "test-allocation-count")))]
 pub type Allocator = heap_sample::SamplingAllocator;
-#[cfg(all(not(target_os = "linux"), not(feature = "test-allocation-count")))]
+#[cfg(all(
+    not(target_os = "linux"),
+    not(target_arch = "wasm32"),
+    not(feature = "test-allocation-count")
+))]
 pub type Allocator = mimalloc::MiMalloc;
+#[cfg(all(target_arch = "wasm32", not(feature = "test-allocation-count")))]
+pub type Allocator = std::alloc::System;
 /// The game's mimalloc allocator.
 #[cfg(not(feature = "test-allocation-count"))]
 pub const ALLOCATOR: Allocator = Allocator {};
@@ -625,6 +631,7 @@ pub fn heap_tag(name: &'static str) -> Option<heap_census::Tag> {
 
 /// `mi_option_purge_delay` in mimalloc.h (index 15 in v2 and v3); the bindings
 /// don't name it.
+#[cfg(not(target_arch = "wasm32"))]
 const PURGE_DELAY: libmimalloc_sys::mi_option_t = 15;
 /// `mi_option_allow_thp` in mimalloc.h (index 43 in v3); unnamed in the bindings too.
 #[cfg(target_os = "linux")]
@@ -641,6 +648,7 @@ const ALLOW_THP: libmimalloc_sys::mi_option_t = 43;
 /// 64 KiB mimalloc page in it is used: in a world at render distance 12 the
 /// game held 200 MiB more that way, at the same load time and frame rate.
 pub fn configure_allocator() {
+    #[cfg(not(target_arch = "wasm32"))]
     // SAFETY: sets one integer option, which mimalloc reads at each purge.
     unsafe {
         libmimalloc_sys::mi_option_set(PURGE_DELAY, 0);
@@ -658,20 +666,14 @@ pub fn configure_allocator() {
 /// The bytes the allocator has committed now and at its peak (mimalloc's
 /// process info), for `horizon-ctl memory`.
 pub fn allocator_commit() -> (usize, usize) {
-    let mut info = [0usize; 8];
-    let [
-        elapsed,
-        user,
-        system,
-        rss,
-        peak_rss,
-        commit,
-        peak_commit,
-        faults,
-    ] = &mut info;
-    // SAFETY: writes eight integers through pointers to them.
-    unsafe {
-        libmimalloc_sys::mi_process_info(
+    #[cfg(target_arch = "wasm32")]
+    {
+        (0, 0)
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let mut info = [0usize; 8];
+        let [
             elapsed,
             user,
             system,
@@ -680,9 +682,22 @@ pub fn allocator_commit() -> (usize, usize) {
             commit,
             peak_commit,
             faults,
-        );
+        ] = &mut info;
+        // SAFETY: writes eight integers through pointers to them.
+        unsafe {
+            libmimalloc_sys::mi_process_info(
+                elapsed,
+                user,
+                system,
+                rss,
+                peak_rss,
+                commit,
+                peak_commit,
+                faults,
+            );
+        }
+        (info[5], info[6])
     }
-    (info[5], info[6])
 }
 
 /// Bumped by [`release_everywhere`]: each pool thread compares it with the
@@ -731,6 +746,7 @@ pub fn release_free_memory() {
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .push(std::thread::current().name().unwrap_or_default().to_owned());
+    #[cfg(not(target_arch = "wasm32"))]
     // SAFETY: frees only pages no allocation uses (this thread's heap, shared arenas).
     unsafe {
         libmimalloc_sys::mi_collect(true);

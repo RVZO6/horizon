@@ -15,12 +15,23 @@ pub mod autotune;
 pub mod compare;
 mod hardware;
 
-#[cfg(not(target_arch = "wasm32"))]
-pub use hardware::power_source;
-pub use hardware::{Display, Gpu, Hardware};
+pub use hardware::{Display, Gpu, Hardware, power_source};
 /// The process probes, from the platform (`horizon-system`).
 #[cfg(not(target_arch = "wasm32"))]
 pub use horizon_system::{cpu_seconds, load_average, rss_bytes};
+
+#[cfg(target_arch = "wasm32")]
+pub fn cpu_seconds(_pid: u32) -> Option<f64> {
+    None
+}
+#[cfg(target_arch = "wasm32")]
+pub fn load_average() -> Option<f64> {
+    None
+}
+#[cfg(target_arch = "wasm32")]
+pub fn rss_bytes(_pid: u32) -> Option<u64> {
+    None
+}
 
 pub const FORMAT: &str = "horizon-benchmark-report";
 pub const VERSION: u32 = 1;
@@ -258,7 +269,6 @@ pub struct Report {
 
 impl Report {
     /// An empty report for this machine, created now.
-    #[cfg(not(target_arch = "wasm32"))]
     pub fn new(kind: Kind, app: App) -> Report {
         Self::with_hardware(kind, app, Hardware::detect())
     }

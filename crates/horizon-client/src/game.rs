@@ -4,8 +4,10 @@ use key_codes::{
     container_key_clones, drop_held_behind_dialog, follow_named_keymap, gameplay_has_keyboard,
     glfw_button, glfw_modifiers, keyboard_button,
 };
+#[cfg(not(target_arch = "wasm32"))]
+use loading_screen::leave_fullscreen_after;
 use loading_screen::{
-    App, Loading, leave_fullscreen_after, missing_resources, run_event_loop, unclean_start_recovery,
+    App, Loading, missing_resources, run_event_loop, unclean_start_recovery,
 };
 use motion_ids::{motion_at, motion_block_entity};
 use resource_load::{
@@ -1353,6 +1355,12 @@ struct Game<'a> {
     view: horizon_client::camera::Camera,
     /// `FramerateLimiter` and its clock.
     limiter: horizon_client::window::FramerateLimiter,
+    /// The browser's frame pacing (`frame_due`).
+    #[cfg(target_arch = "wasm32")]
+    asked_frames: horizon_client::window::AskedFrames,
+    /// The next frame asked for is drawn whatever the frame rate cap (`frame_due`).
+    #[cfg(target_arch = "wasm32")]
+    pub(super) draw_now: bool,
     frame_clock: horizon_client::window::SystemClock,
     /// Hud.scopeScale (spyglass overlay size).
     scope_scale: f32,
@@ -10697,6 +10705,18 @@ impl Game<'_> {
                     self.mapped_key_event(key, event.state == ElementState::Pressed, event.repeat)?;
                 }
                 WindowEvent::RedrawRequested => {
+                    #[cfg(target_arch = "wasm32")]
+                    if !self.frame_due() {
+                        return Ok(());
+                    }
+                    // Nothing else reads the GPU's frame times in the browser (no control
+                    // socket, no benchmark).
+                    #[cfg(target_arch = "wasm32")]
+                    if let Some(r) = &mut self.renderer {
+                        r.set_gpu_timing(
+                            self.settings.horizon.overlay != horizon_client::graphics::Overlay::Off,
+                        );
+                    }
                     horizon_client::spans::time("recover_device", || self.recover_device())?;
                     self.observe_fullscreen();
                     self.sync_ime();
@@ -11341,6 +11361,10 @@ impl<'a> Game<'a> {
             crossbow_sounds: [false; 2],
             view: Default::default(),
             limiter: horizon_client::window::FramerateLimiter::new(0),
+            #[cfg(target_arch = "wasm32")]
+            asked_frames: Default::default(),
+            #[cfg(target_arch = "wasm32")]
+            draw_now: false,
             frame_clock: Default::default(),
             scope_scale: 0.5,
             frame_ticks: 0.0,

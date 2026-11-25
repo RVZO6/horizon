@@ -11,7 +11,7 @@ use crate::sound_engine::{
     Sounds, TickContext,
 };
 use crate::sound_events::{Sound, SoundRegistry};
-#[cfg(feature = "audio")]
+#[cfg(all(feature = "audio", not(target_arch = "wasm32")))]
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use horizon_assets::resource_source::{Resource, ResourceSource};
 use horizon_core::random::{LegacyRandom, RandomSource};
@@ -547,8 +547,11 @@ fn attach_at(
 }
 /// The open output stream. A build without the `audio` feature (the server build, which must not
 /// need libasound) never has one.
-#[cfg(feature = "audio")]
+#[cfg(all(feature = "audio", not(target_arch = "wasm32")))]
 type Stream = cpal::Stream;
+/// The browser's output mixes on a thread of its own (horizon-web), as a native callback does.
+#[cfg(all(feature = "audio", target_arch = "wasm32"))]
+type Stream = horizon_web::AudioOutput;
 #[cfg(not(feature = "audio"))]
 type Stream = std::convert::Infallible;
 /// A level sound retained for the network broadcaster, in playback order.
@@ -1574,7 +1577,7 @@ fn output_disabled(var: impl Fn(&str) -> Option<std::ffi::OsString>) -> Option<S
 }
 /// An output stream on `device` in its default configuration, whatever its
 /// sample format: the mixer works in f32 and converts.
-#[cfg(feature = "audio")]
+#[cfg(all(feature = "audio", not(target_arch = "wasm32")))]
 fn open_device(
     device: &cpal::Device,
     mixer: Arc<Mutex<Mixer>>,
@@ -1619,7 +1622,7 @@ fn open_device(
 }
 /// Try one output device for `open`: skip it when it was already tried, log it
 /// when it opens, and keep its error when it does not.
-#[cfg(feature = "audio")]
+#[cfg(all(feature = "audio", not(target_arch = "wasm32")))]
 fn try_open_device(
     device: &cpal::Device,
     mixer: Arc<Mutex<Mixer>>,
@@ -1648,11 +1651,15 @@ fn try_open_device(
     }
 }
 /// The name of the system's default output device.
-#[cfg(feature = "audio")]
+#[cfg(all(feature = "audio", not(target_arch = "wasm32")))]
 fn default_output_name() -> Option<String> {
     cpal::default_host()
         .default_output_device()
         .and_then(|d| d.name().ok())
+}
+#[cfg(all(feature = "audio", target_arch = "wasm32"))]
+fn default_output_name() -> Option<String> {
+    None
 }
 /// A cheap fingerprint of what `output_devices` can list. On Linux, the ALSA
 /// cards: the rest are `cpal`'s fixed names. On macOS, every Core Audio
@@ -1698,7 +1705,7 @@ fn cards_changed(seen: Option<&str>, cards: Option<&str>) -> bool {
 /// (`buffer_frames`). An environment override `HORIZON_AUDIO_BUFFER` can
 /// specify `default` or a custom frame count (e.g. 2048) when the default short
 /// buffer underruns (e.g. PipeWire min-quantum >= 1024); it is kept as given.
-#[cfg(feature = "audio")]
+#[cfg(all(feature = "audio", not(target_arch = "wasm32")))]
 fn target_buffer_size(
     range: (u32, u32),
     steps: u32,
@@ -1729,7 +1736,7 @@ fn target_buffer_size(
 /// backend's `BufferSize::Default` means a ~100 ms buffer, so sound effects
 /// come out about 100 ms late: request a short fixed buffer there. Other
 /// platforms keep cpal's default behaviour. `steps`: `target_buffer_size`.
-#[cfg(feature = "audio")]
+#[cfg(all(feature = "audio", not(target_arch = "wasm32")))]
 fn audio_stream_config(config: &cpal::SupportedStreamConfig, steps: u32) -> cpal::StreamConfig {
     let mut sc = config.config();
     let range = match config.buffer_size() {
@@ -1742,7 +1749,7 @@ fn audio_stream_config(config: &cpal::SupportedStreamConfig, steps: u32) -> cpal
     sc
 }
 
-#[cfg(feature = "audio")]
+#[cfg(all(feature = "audio", not(target_arch = "wasm32")))]
 fn build_stream<T: cpal::SizedSample + cpal::FromSample<f32>>(
     device: &cpal::Device,
     config: &cpal::SupportedStreamConfig,
@@ -1778,7 +1785,7 @@ fn build_stream<T: cpal::SizedSample + cpal::FromSample<f32>>(
     Ok(stream)
 }
 /// Available audio output device names.
-#[cfg(feature = "audio")]
+#[cfg(all(feature = "audio", not(target_arch = "wasm32")))]
 pub fn output_devices() -> Vec<String> {
     if output_disabled(|name| std::env::var_os(name)).is_some() {
         return Vec::new();
@@ -1797,7 +1804,7 @@ pub fn output_devices() -> Vec<String> {
     names
 }
 
-#[cfg(not(feature = "audio"))]
+#[cfg(any(not(feature = "audio"), target_arch = "wasm32"))]
 pub fn output_devices() -> Vec<String> {
     Vec::new()
 }
@@ -1914,7 +1921,11 @@ impl Audio {
     fn open_named(_: Arc<Mutex<Mixer>>, _: &str) -> Result<Stream> {
         Err("this build has no sound output (built without the `audio` feature)".into())
     }
-    #[cfg(feature = "audio")]
+    #[cfg(all(feature = "audio", target_arch = "wasm32"))]
+    fn open_named(mixer: Arc<Mutex<Mixer>>, _target: &str) -> Result<Stream> {
+        Self::open(mixer)
+    }
+    #[cfg(all(feature = "audio", not(target_arch = "wasm32")))]
     fn open_named(mixer: Arc<Mutex<Mixer>>, target: &str) -> Result<Stream> {
         if let Some(reason) = output_disabled(|name| std::env::var_os(name)) {
             return Err(reason.into());
@@ -1966,7 +1977,26 @@ impl Audio {
         self.device_name = name.to_owned();
         Ok(())
     }
-    #[cfg(feature = "audio")]
+    #[cfg(all(feature = "audio", target_arch = "wasm32"))]
+    fn open(mixer: Arc<Mutex<Mixer>>) -> Result<Stream> {
+        if let Some(reason) = output_disabled(|name| std::env::var_os(name)) {
+            return Err(reason.into());
+        }
+        let output = horizon_web::AudioOutput::open(move |data, channels, rate| {
+            if let Ok(mut m) = mixer.lock() {
+                mix(&mut m, data, channels, rate);
+            } else {
+                data.fill(0.0);
+            }
+        })?;
+        log::info!(
+            "Horizon: audio output AudioWorklet ({} Hz, {} channels, f32)",
+            output.rate(),
+            horizon_web::AudioOutput::CHANNELS
+        );
+        Ok(output)
+    }
+    #[cfg(all(feature = "audio", not(target_arch = "wasm32")))]
     fn open(mixer: Arc<Mutex<Mixer>>) -> Result<Stream> {
         if let Some(reason) = output_disabled(|name| std::env::var_os(name)) {
             return Err(reason.into());
@@ -2128,6 +2158,9 @@ impl Audio {
     /// found.
     #[cfg(feature = "audio")]
     fn should_change_device(&mut self, lost: bool, current: Option<String>) -> bool {
+        if cfg!(target_arch = "wasm32") {
+            return false;
+        }
         if lost {
             self.note_lost_device();
             return true;

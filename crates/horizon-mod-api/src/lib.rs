@@ -74,10 +74,17 @@ pub mod wire {
     pub use resources::{
         ResourceCodec, ResourceScope, ScopeError, ScopeLease, ScopeToken, borrow_token,
     };
-    /// The mod side of the WebAssembly boundary.
-    #[cfg(any(target_arch = "wasm32", feature = "wasm-guest"))]
+    /// The mod side of the WebAssembly boundary (single-threaded wasm guest mods; not the
+    /// multi-threaded browser build of the game itself, which sets `+atomics`).
+    #[cfg(any(
+        all(target_arch = "wasm32", not(target_feature = "atomics")),
+        feature = "wasm-guest"
+    ))]
     pub mod wire_guest;
-    #[cfg(any(target_arch = "wasm32", feature = "wasm-guest"))]
+    #[cfg(any(
+        all(target_arch = "wasm32", not(target_feature = "atomics")),
+        feature = "wasm-guest"
+    ))]
     pub use wire_guest as guest;
 }
 

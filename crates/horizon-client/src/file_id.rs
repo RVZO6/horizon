@@ -48,12 +48,23 @@ pub struct FileIdentity {
 impl FileIdentity {
     /// Read the identity from the already-open file.
     pub fn of(file: &std::fs::File) -> std::io::Result<Self> {
-        use cap_fs_ext::MetadataExt;
-        let metadata = cap_std::fs::File::from_std(file.try_clone()?).metadata()?;
-        Ok(Self {
-            device: metadata.dev(),
-            index: metadata.ino(),
-        })
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            use cap_fs_ext::MetadataExt;
+            let metadata = cap_std::fs::File::from_std(file.try_clone()?).metadata()?;
+            Ok(Self {
+                device: metadata.dev(),
+                index: metadata.ino(),
+            })
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            let _ = file;
+            Ok(Self {
+                device: 0,
+                index: 0,
+            })
+        }
     }
 }
 

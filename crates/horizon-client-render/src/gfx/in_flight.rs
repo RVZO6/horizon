@@ -16,8 +16,8 @@ impl Renderer {
                 c();
                 g();
             })),
-            (Some(c), None) => Some(Box::new(c)),
-            (None, Some(g)) => Some(Box::new(g)),
+            (Some(c), None) => Some(c),
+            (None, Some(g)) => Some(g),
             (None, None) => None,
         }
     }

@@ -41,6 +41,7 @@
     "horizon-java-properties": "engine",
     "horizon-system": "engine",
     "horizon-threads": "engine",
+    "horizon-web": "engine",
     "horizon-guest-stack": "engine",
     "horizon-world": "engine",
     "cargo-horizon-mod": "tool",

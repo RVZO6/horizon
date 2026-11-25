@@ -32,10 +32,22 @@ pub struct FrameState<'a> {
     pub output: &'a EffectiveOutput,
 }
 
+/// `Send` on native targets where GPU resources can cross threads; unconstrained on `wasm32`
+/// where `wgpu` handles are bound to the thread that created them.
+#[cfg(not(target_arch = "wasm32"))]
+pub trait MaybeSend: Send {}
+#[cfg(not(target_arch = "wasm32"))]
+impl<T: Send + ?Sized> MaybeSend for T {}
+
+#[cfg(target_arch = "wasm32")]
+pub trait MaybeSend {}
+#[cfg(target_arch = "wasm32")]
+impl<T: ?Sized> MaybeSend for T {}
+
 /// An external shader pipeline, called by the renderer at fixed points of a world frame (not
 /// title frames, unless a point says so), in the order below, and as it is installed, replaced
 /// and reset. Every method has a default that leaves vanilla's way in place.
-pub trait ExternalPipeline: Send + std::any::Any {
+pub trait ExternalPipeline: MaybeSend + std::any::Any {
     /// What it does in the engine's place, asked once, when it is installed. None: it draws
     /// nothing of the world, and the renderer runs as without a shader pack. Some: it also
     /// presents the world, in `run_post` and `run_output`, which then run in place of the

@@ -199,7 +199,7 @@ impl CenterDepth {
 
     /// The readback of what the frame copied, to start by calling it right after the frame's
     /// submission: on the submit thread when the frame goes there, as culling's readback.
-    pub fn submitted(&mut self) -> Option<impl FnOnce() + Send + 'static + use<>> {
+    pub fn submitted(&mut self) -> Option<super::submit::AfterSubmit> {
         let copied: Vec<_> = self
             .slots
             .iter()
@@ -209,15 +209,17 @@ impl CenterDepth {
                 (s.buffer.clone(), s.state.clone())
             })
             .collect();
-        (!copied.is_empty()).then_some(move || {
-            for (buffer, state) in copied {
-                buffer
-                    .slice(..)
-                    .map_async(wgpu::MapMode::Read, move |result| {
-                        let next = if result.is_ok() { MAPPED } else { FREE };
-                        state.store(next, Ordering::Release);
-                    });
-            }
+        (!copied.is_empty()).then(|| {
+            Box::new(move || {
+                for (buffer, state) in copied {
+                    buffer
+                        .slice(..)
+                        .map_async(wgpu::MapMode::Read, move |result| {
+                            let next = if result.is_ok() { MAPPED } else { FREE };
+                            state.store(next, Ordering::Release);
+                        });
+                }
+            }) as super::submit::AfterSubmit
         })
     }
 

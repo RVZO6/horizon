@@ -3501,12 +3501,17 @@ fn load_layers<'a>(jar_store: &Path, mods: &'a [ContentMod]) -> Result<Vec<ModLa
                 if source.is_dir() {
                     crate::packs::Source::Dir(source)
                 } else {
-                    // Exactly the entries the package's checks read.
-                    crate::packs::Source::Opened(
-                        horizon_assets::resource_source::ResourceSource::opened_archive(
-                            horizon_assets::zip::Zip::open_exact(&source)?,
-                        ),
-                    )
+                    #[cfg(target_arch = "wasm32")]
+                    return Err("archive mod layers are unavailable on wasm32".into());
+                    #[cfg(not(target_arch = "wasm32"))]
+                    {
+                        // Exactly the entries the package's checks read.
+                        crate::packs::Source::Opened(
+                            horizon_assets::resource_source::ResourceSource::opened_archive(
+                                horizon_assets::zip::Zip::open_exact(&source)?,
+                            ),
+                        )
+                    }
                 },
                 None,
             )?);

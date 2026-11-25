@@ -1214,8 +1214,8 @@ impl NativePost {
             let layout = kept::pass(&kept, Some(i)).map_or(&pipeline_layout, |p| &p.pipeline);
             let label = &stage.label;
             let pipeline = post_pipeline(device, label, layout, stage.module, constants, target);
-            let internal = pollster::block_on(internal.pop());
-            if let Some(e) = internal.or(pollster::block_on(validation.pop())) {
+            let internal = crate::gfx::scope_error(internal.pop());
+            if let Some(e) = internal.or(crate::gfx::scope_error(validation.pop())) {
                 return Err(BuildError::Refused(format!("{}: {e}", stage.file)));
             }
             passes.push((stage.label, pipeline));
@@ -1243,8 +1243,8 @@ impl NativePost {
             "horizon_fs_tonemap",
         );
         let pipeline = fullscreen_pipeline(device, "Tonemap", &module, stages, format, &present);
-        let internal = pollster::block_on(internal.pop());
-        if let Some(e) = internal.or(pollster::block_on(validation.pop())) {
+        let internal = crate::gfx::scope_error(internal.pop());
+        if let Some(e) = internal.or(crate::gfx::scope_error(validation.pop())) {
             return Err(BuildError::Refused(format!("{file}: {e}")));
         }
         let display = Display {

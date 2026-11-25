@@ -1,17 +1,26 @@
 //! One checked implementation for config, game bulk data and world bulk data.
 use super::Game;
+#[cfg(not(target_arch = "wasm32"))]
 use cap_fs_ext::{DirExt, FollowSymlinks, OpenOptionsFollowExt};
+#[cfg(not(target_arch = "wasm32"))]
 use cap_std::fs::{Dir, Metadata, OpenOptions};
+#[cfg(not(target_arch = "wasm32"))]
+use mod_api::{CONFIG_LIST_MAX, ConfigEntryKind};
 use mod_api::{
-    CONFIG_FILE_MAX, CONFIG_LIST_MAX, ConfigEntry, ConfigEntryKind, ConfigFileError, ConfigFiles,
-    ConfigPath, ConfigStat, DATA_FILE_MAX,
+    CONFIG_FILE_MAX, ConfigEntry, ConfigFileError, ConfigFiles, ConfigPath, ConfigStat,
+    DATA_FILE_MAX,
 };
+#[cfg(not(target_arch = "wasm32"))]
 use std::collections::BTreeMap;
 #[cfg(test)]
 use std::fs;
-use std::io::{ErrorKind, Read, Write};
+#[cfg(not(target_arch = "wasm32"))]
+use std::io::{Read, Write};
+use std::io::ErrorKind;
 use std::path::PathBuf;
+#[cfg(not(target_arch = "wasm32"))]
 use std::sync::atomic::{AtomicU64, Ordering};
+#[cfg(not(target_arch = "wasm32"))]
 use std::time::UNIX_EPOCH;
 
 struct GameConfigFiles {
@@ -75,10 +84,14 @@ fn io(error: std::io::Error) -> ConfigFileError {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
+mod ops {
+    use super::*;
+
 /// Open every directory without following links. Keeping the parent handle
 /// makes subsequent opens and atomic replacement safe even if a directory is
 /// renamed or replaced between operations.
-fn resolve(
+pub(super) fn resolve(
     root: &FileRoot,
     path: &ConfigPath,
     create: bool,
@@ -171,13 +184,13 @@ fn stat_of(meta: &Metadata) -> ConfigStat {
     })
 }
 
-fn read(root: &FileRoot, file: &ConfigPath) -> Result<Vec<u8>, ConfigFileError> {
+pub(super) fn read(root: &FileRoot, file: &ConfigPath) -> Result<Vec<u8>, ConfigFileError> {
     let mod_id =
         mod_api::content::crash::current_native_mod().ok_or(ConfigFileError::NoCallingMod)?;
     read_for(root, file, mod_id)
 }
 
-fn read_for(root: &FileRoot, file: &ConfigPath, mod_id: &str) -> Result<Vec<u8>, ConfigFileError> {
+pub(super) fn read_for(root: &FileRoot, file: &ConfigPath, mod_id: &str) -> Result<Vec<u8>, ConfigFileError> {
     let (directory, name) = resolve_for(root, file, false, mod_id)?;
     let meta = directory.symlink_metadata(&name).map_err(io)?;
     if !meta.is_file() {
@@ -216,13 +229,13 @@ fn is_write_temp(name: &str) -> bool {
 /// Written beside the file, then renamed over it. The temporary name starts
 /// with the file's own, so it stays the mod's own; `list` leaves it out, so a
 /// scan never meets a half-written file, nor one a crash left behind.
-fn write(root: &FileRoot, file: &ConfigPath, bytes: &[u8]) -> Result<(), ConfigFileError> {
+pub(super) fn write(root: &FileRoot, file: &ConfigPath, bytes: &[u8]) -> Result<(), ConfigFileError> {
     let mod_id =
         mod_api::content::crash::current_native_mod().ok_or(ConfigFileError::NoCallingMod)?;
     write_for(root, file, bytes, mod_id)
 }
 
-fn write_for(
+pub(super) fn write_for(
     root: &FileRoot,
     file: &ConfigPath,
     bytes: &[u8],
@@ -264,7 +277,7 @@ fn write_for(
     written.map_err(io)
 }
 
-fn list(
+pub(super) fn list(
     root: &FileRoot,
     folder: &ConfigPath,
     after: Option<&str>,
@@ -315,7 +328,7 @@ fn list(
         .collect())
 }
 
-fn stat(root: &FileRoot, path: &ConfigPath) -> Result<Option<ConfigStat>, ConfigFileError> {
+pub(super) fn stat(root: &FileRoot, path: &ConfigPath) -> Result<Option<ConfigStat>, ConfigFileError> {
     match resolve(root, path, false).and_then(|(dir, name)| dir.symlink_metadata(name).map_err(io))
     {
         Ok(meta) if meta.file_type().is_symlink() => Err(ConfigFileError::Symlink),
@@ -325,7 +338,7 @@ fn stat(root: &FileRoot, path: &ConfigPath) -> Result<Option<ConfigStat>, Config
     }
 }
 
-fn delete(root: &FileRoot, file: &ConfigPath) -> Result<(), ConfigFileError> {
+pub(super) fn delete(root: &FileRoot, file: &ConfigPath) -> Result<(), ConfigFileError> {
     let mod_id =
         mod_api::content::crash::current_native_mod().ok_or(ConfigFileError::NoCallingMod)?;
     delete_for(root, file, mod_id)
@@ -345,6 +358,53 @@ fn delete_for(root: &FileRoot, file: &ConfigPath, mod_id: &str) -> Result<(), Co
         return Err(ConfigFileError::NotAFile);
     }
     directory.remove_file(&name).map_err(io)
+}
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+use ops::{delete, list, read, read_for, stat, write, write_for};
+
+#[cfg(target_arch = "wasm32")]
+fn unsupported_config() -> ConfigFileError {
+    ConfigFileError::Io("config files are unsupported in the browser build".into())
+}
+#[cfg(target_arch = "wasm32")]
+fn read(_root: &FileRoot, _file: &ConfigPath) -> Result<Vec<u8>, ConfigFileError> {
+    Err(unsupported_config())
+}
+#[cfg(target_arch = "wasm32")]
+fn read_for(_root: &FileRoot, _file: &ConfigPath, _mod_id: &str) -> Result<Vec<u8>, ConfigFileError> {
+    Err(unsupported_config())
+}
+#[cfg(target_arch = "wasm32")]
+fn write(_root: &FileRoot, _file: &ConfigPath, _bytes: &[u8]) -> Result<(), ConfigFileError> {
+    Err(unsupported_config())
+}
+#[cfg(target_arch = "wasm32")]
+fn write_for(
+    _root: &FileRoot,
+    _file: &ConfigPath,
+    _bytes: &[u8],
+    _mod_id: &str,
+) -> Result<(), ConfigFileError> {
+    Err(unsupported_config())
+}
+#[cfg(target_arch = "wasm32")]
+fn list(
+    _root: &FileRoot,
+    _folder: &ConfigPath,
+    _after: Option<&str>,
+    _limit: u32,
+) -> Result<Vec<ConfigEntry>, ConfigFileError> {
+    Err(unsupported_config())
+}
+#[cfg(target_arch = "wasm32")]
+fn stat(_root: &FileRoot, _path: &ConfigPath) -> Result<Option<ConfigStat>, ConfigFileError> {
+    Err(unsupported_config())
+}
+#[cfg(target_arch = "wasm32")]
+fn delete(_root: &FileRoot, _file: &ConfigPath) -> Result<(), ConfigFileError> {
+    Err(unsupported_config())
 }
 
 impl GameConfigFiles {

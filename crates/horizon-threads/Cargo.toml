@@ -8,6 +8,8 @@ description = "Scheduling hints for the game's threads and its allocator, and th
 
 [dependencies]
 horizon-guest-stack = { path = "../horizon-guest-stack" }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 mimalloc = { version = "0.1.52", default-features = false }
 libmimalloc-sys = { version = "0.1.49", default-features = false, features = ["extended"] }
 

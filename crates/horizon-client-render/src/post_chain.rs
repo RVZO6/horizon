@@ -754,36 +754,44 @@ impl PostEffects {
         if ids.is_empty() {
             return;
         }
-        let (tx, rx) = mpsc::channel();
-        let (device, queue, root) = (device.clone(), queue.clone(), root.to_owned());
-        let format = format.remove_srgb_suffix();
-        let spawned = std::thread::Builder::new()
-            .name("Post effects".into())
-            .spawn({
-                let ids = ids.clone();
-                move || {
-                    for id in ids {
-                        let mut chain = Self::load(&root, &device, &queue, &id, &Extras::default());
-                        if let Ok(Some(chain)) = &mut chain {
-                            for pass in &mut chain.passes {
-                                if let Some(translated) = &mut pass.translated {
-                                    translated.ensure_pipeline(&device, format);
+        #[cfg(target_arch = "wasm32")]
+        {
+            let _ = (device, queue, format);
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let (tx, rx) = mpsc::channel();
+            let (device, queue, root) = (device.clone(), queue.clone(), root.to_owned());
+            let format = format.remove_srgb_suffix();
+            let spawned = std::thread::Builder::new()
+                .name("Post effects".into())
+                .spawn({
+                    let ids = ids.clone();
+                    move || {
+                        for id in ids {
+                            let mut chain =
+                                Self::load(&root, &device, &queue, &id, &Extras::default());
+                            if let Ok(Some(chain)) = &mut chain {
+                                for pass in &mut chain.passes {
+                                    if let Some(translated) = &mut pass.translated {
+                                        translated.ensure_pipeline(&device, format);
+                                    }
                                 }
                             }
-                        }
-                        if tx.send((id, chain)).is_err() {
-                            return;
+                            if tx.send((id, chain)).is_err() {
+                                return;
+                            }
                         }
                     }
-                }
-            });
-        if let Ok(worker) = spawned {
-            #[cfg(test)]
-            self.test_workers.push(worker);
-            #[cfg(not(test))]
-            drop(worker);
-            self.pending.extend(ids);
-            self.preloading = Some((self.root.clone(), rx));
+                });
+            if let Ok(worker) = spawned {
+                #[cfg(test)]
+                self.test_workers.push(worker);
+                #[cfg(not(test))]
+                drop(worker);
+                self.pending.extend(ids);
+                self.preloading = Some((self.root.clone(), rx));
+            }
         }
     }
 
@@ -2089,7 +2097,7 @@ mod tests {
         );
         let buffer = crate::gfx::copy_frame(device, &mut encoder, &frame, [8, 4]);
         queue.submit([encoder.finish()]);
-        if let Some(error) = pollster::block_on(scope.pop()) {
+        if let Some(error) = crate::gfx::scope_error(scope.pop()) {
             panic!("{error}");
         }
         buffer.map_async(wgpu::MapMode::Read, .., |r| r.unwrap());
@@ -2225,7 +2233,7 @@ mod tests {
         ));
         let buffer = crate::gfx::copy_frame(device, &mut encoder, &frame, [8, 4]);
         queue.submit([encoder.finish()]);
-        if let Some(error) = pollster::block_on(scope.pop()) {
+        if let Some(error) = crate::gfx::scope_error(scope.pop()) {
             panic!("{error}");
         }
         buffer.map_async(wgpu::MapMode::Read, .., |r| r.unwrap());

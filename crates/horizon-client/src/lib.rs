@@ -12,7 +12,7 @@ pub mod entry;
 // dylib, and the allocator must be the one its code and the mods' executable share. The Windows and macOS archives
 // build with `system-allocator`: their loaders bind each library to std's own allocator, which everything then
 // shares (arismoko/horizon#2394, arismoko/horizon#3877).
-#[cfg(not(feature = "system-allocator"))]
+#[cfg(not(any(feature = "system-allocator", target_arch = "wasm32")))]
 #[global_allocator]
 static ALLOCATOR: horizon_threads::GameAllocator = horizon_threads::GAME_ALLOCATOR;
 pub mod game;

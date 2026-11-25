@@ -1545,7 +1545,7 @@ mod tests {
         let _commands = encoder.finish();
         let _copy = pipelines.depth_copy_bind_group(&device, &depth_view, &res.history_depth_view);
         assert!(
-            pollster::block_on(scope.pop()).is_none(),
+            crate::gfx::scope_error(scope.pop()).is_none(),
             "prepare/motion/depth-copy bind groups must validate with their depth contracts"
         );
     }

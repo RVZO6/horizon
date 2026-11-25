@@ -137,7 +137,14 @@ impl super::Renderer {
             pass.set_vertex_buffer(0, self.entity_buffer.slice(..));
             pass.set_pipeline(native);
             pass.set_bind_group(0, &self.entity_group, &[]);
-            pass.draw_indexed(0..count * 6, (first * 4) as i32, 0..1);
+            self.draw_indexed(
+                pass,
+                &self.entity_buffer,
+                std::mem::size_of::<super::Vertex>() as u64,
+                0..count * 6,
+                (first * 4) as i32,
+                0..1,
+            );
         };
         if let Some(core) = &self.core_text {
             let (start, end) = (first * 4 - posed, (first + count) * 4 - posed);
@@ -282,8 +289,8 @@ impl CoreText {
                 multiview_mask: None,
                 cache: None,
             });
-            let internal = pollster::block_on(internal.pop());
-            let validation = pollster::block_on(validation.pop());
+            let internal = crate::gfx::scope_error(internal.pop());
+            let validation = crate::gfx::scope_error(validation.pop());
             if let Some(e) = internal.or(validation) {
                 log::warn!("{label} is not used: {e}");
                 None

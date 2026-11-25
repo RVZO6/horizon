@@ -62,6 +62,27 @@ pub struct Display {
     pub refresh_hz: Option<u32>,
 }
 
+#[cfg(target_arch = "wasm32")]
+impl Hardware {
+    pub fn detect() -> Hardware {
+        Hardware {
+            os: std::env::consts::OS.to_owned(),
+            arch: std::env::consts::ARCH.to_owned(),
+            cpu_threads: std::thread::available_parallelism().ok().map(|n| n.get()),
+            ..Hardware::default()
+        }
+    }
+
+    pub fn detect_in(_game_dir: &std::path::Path) -> Hardware {
+        Hardware::detect()
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+pub fn power_source() -> Option<&'static str> {
+    None
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 impl Hardware {
     pub fn detect() -> Hardware {

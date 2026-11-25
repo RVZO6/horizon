@@ -430,6 +430,10 @@ impl Game<'_> {
         self.poll_export();
         // Also runs without a redraw, so a hidden window still handles a server crash.
         self.exit_after_server_crash();
+        #[cfg(target_arch = "wasm32")]
+        if let Err(error) = self.follow_pointer_lock() {
+            self.error = Some(error);
+        }
         if self.pending_save.is_some() {
             if self
                 .pending_save
@@ -445,8 +449,8 @@ impl Game<'_> {
                         window.request_redraw();
                     }
                     // Yield between polls even when disk I/O is slow.
-                    event_loop.set_control_flow(ControlFlow::WaitUntil(
-                        Instant::now() + Duration::from_millis(4),
+                    event_loop.set_control_flow(ControlFlow::wait_duration(
+                        Duration::from_millis(4),
                     ));
                 }
                 Err(error) => {
@@ -508,8 +512,8 @@ impl Game<'_> {
             return;
         }
         if self.export_held() {
-            event_loop.set_control_flow(winit::event_loop::ControlFlow::WaitUntil(
-                Instant::now() + Duration::from_millis(16),
+            event_loop.set_control_flow(winit::event_loop::ControlFlow::wait_duration(
+                Duration::from_millis(16),
             ));
             return;
         }
@@ -538,9 +542,7 @@ impl Game<'_> {
             return;
         }
         if self.live_export_waiting() {
-            event_loop.set_control_flow(ControlFlow::WaitUntil(
-                Instant::now() + Duration::from_millis(1),
-            ));
+            event_loop.set_control_flow(ControlFlow::wait_duration(Duration::from_millis(1)));
             return;
         }
         // Consume the last frame's result: a hidden compositor may stop sending
@@ -570,6 +572,10 @@ impl ApplicationHandler for Game<'_> {
         let attributes = winit::platform::wayland::WindowAttributesExtWayland::with_name(
             attributes, "horizon", "horizon",
         );
+        // The page lays the canvas out (web/www/index.html).
+        #[cfg(target_arch = "wasm32")]
+        let attributes =
+            winit::platform::web::WindowAttributesExtWebSys::with_append(attributes, true);
         // A game an agent started opens without the focus, as splitscreen's windows do, and
         // the person keeps their keyboard and pointer until they click it (`unclaimed_window`).
         // X11 activates it anyway, and Windows can too: the focus claims nothing.
@@ -638,7 +644,7 @@ impl ApplicationHandler for Game<'_> {
                 PhysicalKey::Code(code) => horizon_client::keybinds::key_name(code),
                 PhysicalKey::Unidentified(_) => None,
             };
-            #[cfg(not(target_os = "android"))]
+            #[cfg(not(any(target_os = "android", target_arch = "wasm32")))]
             let layout_key = {
                 use winit::platform::modifier_supplement::KeyEventExtModifierSupplement;
                 horizon_client::keybinds::layout_key_name(
@@ -646,7 +652,7 @@ impl ApplicationHandler for Game<'_> {
                     &event.key_without_modifiers(),
                 )
             };
-            #[cfg(target_os = "android")]
+            #[cfg(any(target_os = "android", target_arch = "wasm32"))]
             let layout_key =
                 horizon_client::keybinds::layout_key_name(event.physical_key, &event.logical_key);
             let raw_code = horizon_client::keybinds::raw_key_code(event.physical_key);

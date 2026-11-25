@@ -468,7 +468,7 @@ impl Resources {
             wgpu::ShaderSource::Naga(std::borrow::Cow::Owned(program.fragment.clone())),
             coverage,
         );
-        if let Some(error) = pollster::block_on(scope.pop()) {
+        if let Some(error) = crate::gfx::scope_error(scope.pop()) {
             log::warn!("resource pack model pipeline is not used: {error}");
             return None;
         }
@@ -563,7 +563,7 @@ impl World {
             materials.insert(key([rect.u0, rect.v0]), Material { groups });
         }
         queue.submit([encoder.finish()]);
-        if pollster::block_on(oom.pop()).is_some() {
+        if crate::gfx::scope_error(oom.pop()).is_some() {
             return None;
         }
         Some(Self {
@@ -790,7 +790,7 @@ impl Gui {
             accepted.insert(name.clone(), to);
         }
         queue.submit([encoder.finish()]);
-        if pollster::block_on(oom.pop()).is_some() {
+        if crate::gfx::scope_error(oom.pop()).is_some() {
             return None;
         }
         Some((

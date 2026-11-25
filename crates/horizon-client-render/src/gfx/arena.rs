@@ -981,6 +981,7 @@ impl<T> Graveyard<T> {
 
 /// Drops `items` on a short-lived thread of its own, as `chunk::free_columns` does for
 /// unloaded chunks; should the thread not start, they drop here.
+#[cfg(not(target_arch = "wasm32"))]
 pub fn free_later<T: Send + 'static>(items: Vec<T>) {
     if items.is_empty() {
         return;
@@ -988,6 +989,11 @@ pub fn free_later<T: Send + 'static>(items: Vec<T>) {
     let _ = std::thread::Builder::new()
         .name("Buffer freeing".into())
         .spawn(move || drop(items));
+}
+
+#[cfg(target_arch = "wasm32")]
+pub fn free_later<T>(items: Vec<T>) {
+    drop(items);
 }
 
 /// `create_buffer` with an out-of-memory failure returned instead of raised
@@ -1006,7 +1012,9 @@ pub(super) fn try_create(
         mapped_at_creation: false,
     });
     // Native error scopes resolve at once.
-    pollster::block_on(scope.pop()).is_none().then_some(buffer)
+    crate::gfx::scope_error(scope.pop())
+        .is_none()
+        .then_some(buffer)
 }
 
 #[cfg(test)]

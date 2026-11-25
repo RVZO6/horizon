@@ -450,7 +450,15 @@ pub fn saved_slot(equipment_slot: usize) -> Option<u8> {
 /// `LevelStorageAccess.estimateDiskSpace`: the usable bytes of the disk holding `dir`
 /// (`FileStore.getUsableSpace`), `u64::MAX` when it cannot be asked.
 pub fn estimate_disk_space(dir: &Path) -> u64 {
-    fs4::available_space(dir).unwrap_or(u64::MAX)
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        fs4::available_space(dir).unwrap_or(u64::MAX)
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = dir;
+        u64::MAX
+    }
 }
 /// `LevelStorageAccess.checkForLowDiskSpace`.
 pub fn low_disk_space(dir: &Path) -> bool {

@@ -92,7 +92,11 @@ pub(crate) fn backend_order(
     wgpu_backend: bool,
 ) -> Vec<wgpu::Backends> {
     use wgpu::Backends;
-    if os == "macos" || wgpu_backend {
+    #[cfg(target_arch = "wasm32")]
+    if WEB_GL.get() {
+        return vec![Backends::GL];
+    }
+    if os == "macos" || wgpu_backend || cfg!(target_arch = "wasm32") {
         return vec![Backends::default()];
     }
     let windows = os == "windows";
@@ -272,6 +276,142 @@ pub(super) fn parse_device_open_timeout(seconds: Option<&str>) -> Duration {
         .map_or(DEVICE_OPEN_TIMEOUT, Duration::from_secs)
 }
 
+#[cfg(target_arch = "wasm32")]
+thread_local! {
+    /// The device `open_web_device` opened, for the first `Renderer::new`.
+    static WEB_DEVICE: std::cell::RefCell<Option<Opened>> = const { std::cell::RefCell::new(None) };
+    /// WebGL needs the window's canvas before it can expose an adapter. Its futures complete
+    /// synchronously, so unlike WebGPU it can be opened inside `Renderer::new`.
+    static WEB_GL: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Opens the browser's GPU device before the game starts. WebGPU answers through promises, which
+/// only settle once the page's thread returns to the browser: never inside the frame where the
+/// game waits for its renderer (`pollster::block_on`). If WebGPU is unavailable or gives no
+/// usable device, falls back to WebGL2 once the canvas exists.
+#[cfg(target_arch = "wasm32")]
+pub async fn open_web_device() -> Result<()> {
+    WEB_GL.set(false);
+    if std::env::var("WGPU_BACKEND")
+        .ok()
+        .is_some_and(|v| v.eq_ignore_ascii_case("gl"))
+    {
+        use_webgl();
+        return Ok(());
+    }
+    let instance = wgpu::Instance::new(instance_descriptor(
+        wgpu::Backends::BROWSER_WEBGPU,
+        None,
+        false,
+        wgpu::Dx12Compiler::Fxc,
+    ));
+    let adapter = match instance
+        .request_adapter(&wgpu::RequestAdapterOptions {
+            power_preference: wgpu::PowerPreference::HighPerformance,
+            compatible_surface: None,
+            force_fallback_adapter: false,
+            ..Default::default()
+        })
+        .await
+    {
+        Ok(adapter) => adapter,
+        Err(error) => {
+            log::warn!("Horizon renderer: WebGPU unavailable ({error}); falling back to WebGL2");
+            use_webgl();
+            return Ok(());
+        }
+    };
+    let needs = surface_setup::DeviceNeeds {
+        layers: 1,
+        rays: false,
+    };
+    let opened = match open_web_adapter("WebGPU", &adapter, needs).await {
+        Ok(adapted) => Opened {
+            instance,
+            surface: None,
+            adapter,
+            device: adapted.device,
+            queue: adapted.queue,
+            device_lost: adapted.device_lost,
+            configured: None,
+        },
+        Err(error) => {
+            log::warn!(
+                "Horizon renderer: WebGPU device unavailable ({error}); falling back to WebGL2"
+            );
+            use_webgl();
+            return Ok(());
+        }
+    };
+    super::animate::check_web_pipeline(&opened.device).await;
+    WEB_DEVICE.with(|device| *device.borrow_mut() = Some(opened));
+    Ok(())
+}
+
+#[cfg(target_arch = "wasm32")]
+fn use_webgl() {
+    WEB_GL.set(true);
+    // WebGL2 guarantees 256 array layers. Fix the split before the resource worker starts,
+    // rather than changing it later while CPU mip preparation may already be running.
+    horizon_web::horizon_web_env(
+        "HORIZON_SPRITE_SPLIT",
+        &super::sprite_split().min(256).to_string(),
+    );
+}
+
+#[cfg(target_arch = "wasm32")]
+async fn open_web_adapter(
+    name: &str,
+    adapter: &wgpu::Adapter,
+    needs: surface_setup::DeviceNeeds,
+) -> std::result::Result<surface_setup::Adapted, String> {
+    describe_adapter(adapter);
+    let limits = adapter.limits();
+    check_layers(adapter, needs.layers).map_err(|e| format!("{name}: {e}"))?;
+    let features = timing::GpuTimer::features(adapter)
+        | pack_timing::PassTiming::features(adapter)
+        | cull::Cull::features(adapter)
+        | oit::features(adapter)
+        | (adapter.features()
+            & (wgpu::Features::INDIRECT_FIRST_INSTANCE
+                | wgpu::Features::MULTI_DRAW_INDIRECT_COUNT
+                | wgpu::Features::MAPPABLE_PRIMARY_BUFFERS
+                | wgpu::Features::TEXTURE_FORMAT_16BIT_NORM
+                | wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES
+                | wgpu::Features::RG11B10UFLOAT_RENDERABLE
+                | wgpu::Features::SUBGROUP
+                | wgpu::Features::VERTEX_WRITABLE_STORAGE
+                | wgpu::Features::CLEAR_TEXTURE
+                | wgpu::Features::TEXTURE_ATOMIC
+                | wgpu::Features::FLOAT32_FILTERABLE));
+    let desc = wgpu::DeviceDescriptor {
+        label: Some("Horizon device"),
+        required_features: features,
+        required_limits: limits,
+        memory_hints: surface_setup::MEMORY_HINTS,
+        ..Default::default()
+    };
+    let (device, queue) = adapter
+        .request_device(&desc)
+        .await
+        .map_err(|e| format!("{name} device: {e}"))?;
+    let device_lost = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let lost = device_lost.clone();
+    device.set_device_lost_callback(move |reason, message| {
+        if reason == wgpu::DeviceLostReason::Destroyed {
+            return;
+        }
+        log::warn!("Horizon renderer: the graphics device was lost ({reason:?}: {message})");
+        lost.store(true, std::sync::atomic::Ordering::Relaxed);
+    });
+    Ok(surface_setup::Adapted {
+        device,
+        queue,
+        device_lost,
+        configured: None,
+    })
+}
+
 /// Opens a device on the first of `backend_order`'s backends that gives one.
 /// Offscreen rendering needs no surface, so it can use a GPU the window's
 /// display cannot present from (a headless compositor).
@@ -281,49 +421,73 @@ pub(super) async fn open_device(
     api: GraphicsApi,
     needs: surface_setup::DeviceNeeds,
 ) -> Result<Opened> {
-    let wgpu_backend = std::env::var_os("WGPU_BACKEND").is_some();
-    // A search that hangs does so inside the driver, where nothing in this process can
-    // interrupt it: the search stays on this thread (a window's surface can only be made
-    // on it), and a watchdog ends the start instead of leaving the boot screen forever.
-    let timeout = device_open_timeout();
-    let searched = Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let effective_api = api.with_env();
-    let active_api = Arc::new(std::sync::Mutex::new(effective_api));
-    let active_for_timeout = active_api.clone();
-    let searched_for_timeout = searched.clone();
-    let (disarm, _watchdog) = arm_search_watchdog(
-        timeout,
-        DEVICE_OPEN_GRACE,
-        searched.clone(),
-        move || {
-            let hung = active_for_timeout.lock().map_or(effective_api, |g| *g);
-            super::safe_start::mark_watchdog_hang(&searched_for_timeout, hung);
-            log::error!("{}", device_search_timed_out(timeout));
-            log::logger().flush();
-        },
-        move || {
-            let message = device_search_timed_out(timeout);
-            // The panic hook reports and ends the game (a start stuck inside a driver call
-            // never dies on its own). The watchdog's thread name takes the hook's worker-thread
-            // path: a crash report, then exit code 101.
-            panic!("{message}");
-        },
-    );
-    let opened = open_device_search(
-        window.clone(),
-        offscreen,
-        wgpu_backend,
-        api,
-        needs,
-        &active_api,
-    )
-    .await;
-    searched.store(true, std::sync::atomic::Ordering::Release);
-    if opened.is_ok() {
-        super::safe_start::clear_watchdog_hang();
+    #[cfg(target_arch = "wasm32")]
+    if let Some(mut opened) = WEB_DEVICE.with(|device| device.borrow_mut().take()) {
+        check_layers(&opened.adapter, needs.layers)?;
+        if !offscreen {
+            opened.surface = Some(opened.instance.create_surface(window.clone())?);
+        }
+        return Ok(opened);
     }
-    drop(disarm);
-    opened
+    let wgpu_backend = std::env::var_os("WGPU_BACKEND").is_some();
+    #[cfg(target_arch = "wasm32")]
+    {
+        let active_api = std::sync::Mutex::new(api.with_env());
+        open_device_search(
+            window.clone(),
+            offscreen,
+            wgpu_backend,
+            api,
+            needs,
+            &active_api,
+        )
+        .await
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        // A search that hangs does so inside the driver, where nothing in this process can
+        // interrupt it: the search stays on this thread (a window's surface can only be made
+        // on it), and a watchdog ends the start instead of leaving the boot screen forever.
+        let timeout = device_open_timeout();
+        let searched = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let effective_api = api.with_env();
+        let active_api = Arc::new(std::sync::Mutex::new(effective_api));
+        let active_for_timeout = active_api.clone();
+        let searched_for_timeout = searched.clone();
+        let (disarm, _watchdog) = arm_search_watchdog(
+            timeout,
+            DEVICE_OPEN_GRACE,
+            searched.clone(),
+            move || {
+                let hung = active_for_timeout.lock().map_or(effective_api, |g| *g);
+                super::safe_start::mark_watchdog_hang(&searched_for_timeout, hung);
+                log::error!("{}", device_search_timed_out(timeout));
+                log::logger().flush();
+            },
+            move || {
+                let message = device_search_timed_out(timeout);
+                // The panic hook reports and ends the game (a start stuck inside a driver call
+                // never dies on its own). The watchdog's thread name takes the hook's worker-thread
+                // path: a crash report, then exit code 101.
+                panic!("{message}");
+            },
+        );
+        let opened = open_device_search(
+            window.clone(),
+            offscreen,
+            wgpu_backend,
+            api,
+            needs,
+            &active_api,
+        )
+        .await;
+        searched.store(true, std::sync::atomic::Ordering::Release);
+        if opened.is_ok() {
+            super::safe_start::clear_watchdog_hang();
+        }
+        drop(disarm);
+        opened
+    }
 }
 /// `open_device`'s tries in turn, each a set of backends and whether a software adapter
 /// (WARP, llvmpipe) is allowed.
@@ -760,9 +924,14 @@ const NO_GPU_DRIVER: &str = "No graphics driver with Vulkan, DirectX 12 or OpenG
      start the game again";
 #[cfg(target_os = "macos")]
 const NO_GPU_DRIVER: &str = "No Metal graphics device found";
-#[cfg(not(any(target_os = "windows", target_os = "macos")))]
+#[cfg(all(
+    not(target_arch = "wasm32"),
+    not(any(target_os = "windows", target_os = "macos"))
+))]
 const NO_GPU_DRIVER: &str = "No Vulkan or OpenGL graphics driver found: Horizon needs the Vulkan loader \
      (libvulkan.so.1) and a Vulkan driver for your GPU (Mesa's, or NVIDIA's), or OpenGL through EGL";
+#[cfg(target_arch = "wasm32")]
+const NO_GPU_DRIVER: &str = "No usable browser graphics device found (WebGPU or WebGL2)";
 #[cfg(test)]
 mod tests {
     use super::{AdapterFailure, gives_way};

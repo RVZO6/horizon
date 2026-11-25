@@ -104,8 +104,8 @@ pub(crate) fn made<T>(device: &wgpu::Device, kind: Kind, make: impl FnOnce() -> 
     let validation = device.push_error_scope(wgpu::ErrorFilter::Validation);
     let memory = device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
     let value = make();
-    let memory = pollster::block_on(memory.pop()).map(|e| e.to_string());
-    let validation = pollster::block_on(validation.pop()).map(|e| e.to_string());
+    let memory = crate::gfx::scope_error(memory.pop()).map(|e| e.to_string());
+    let validation = crate::gfx::scope_error(validation.pop()).map(|e| e.to_string());
     #[cfg(test)]
     let memory = memory.or_else(|| {
         let left = NO_ROOM.get().checked_sub(1)?;

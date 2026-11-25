@@ -333,7 +333,7 @@ mod tests {
             let buffer = crate::gfx::copy_frame(&device, &mut encoder, &frame, [70, 3]);
             readback.present(&device, &mut encoder, &surface);
             queue.submit([encoder.finish()]);
-            if let Some(error) = pollster::block_on(scope.pop()) {
+            if let Some(error) = crate::gfx::scope_error(scope.pop()) {
                 panic!("{error}");
             }
             assert_eq!(last_pixel(&device, &buffer), bgra);
@@ -391,7 +391,7 @@ mod tests {
         readback.present(device, &mut encoder, &surface);
         let presented = crate::gfx::copy_frame(device, &mut encoder, &surface, [70, 3]);
         queue.submit([encoder.finish()]);
-        if let Some(error) = pollster::block_on(scope.pop()) {
+        if let Some(error) = crate::gfx::scope_error(scope.pop()) {
             panic!("{error}");
         }
         assert_eq!(last_pixel(device, &screenshot), expected);
@@ -477,7 +477,7 @@ mod tests {
             blitter.copy(&device, &mut encoder, &view(&surface), &view(&check));
             let shown = crate::gfx::copy_frame(&device, &mut encoder, &check, [70, 3]);
             queue.submit([encoder.finish()]);
-            if let Some(error) = pollster::block_on(scope.pop()) {
+            if let Some(error) = crate::gfx::scope_error(scope.pop()) {
                 panic!("{usage:?} {screenshot}: {error}");
             }
             assert_eq!(last_pixel(&device, &shown), [0, 51, 255, 255]);

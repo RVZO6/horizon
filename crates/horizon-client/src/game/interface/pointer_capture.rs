@@ -208,6 +208,8 @@ impl Game<'_> {
             // InputQuirks.RESTORE_KEY_STATE_AFTER_MOUSE_GRAB is off (macOS).
             self.restore_held_keys();
         }
+        #[cfg(target_arch = "wasm32")]
+        horizon_web::want_pointer_lock(capture);
         let Some(window) = &self.window else { return };
         let size = self.renderer.as_ref().map_or_else(
             || window.inner_size().into(),
@@ -254,6 +256,12 @@ impl Game<'_> {
                 None
             };
             self.captured = self.capture_mode.is_some();
+            // The browser locks the pointer later, and only after a click: captured once it
+            // has (`follow_pointer_lock`).
+            #[cfg(target_arch = "wasm32")]
+            {
+                self.captured = horizon_web::pointer_locked();
+            }
             // Windows already warped above, inside the clip's own position.
             #[cfg(not(any(target_os = "macos", target_os = "windows")))]
             if self.captured && self.focused {
@@ -294,6 +302,29 @@ impl Game<'_> {
         if !self.internal_grab() {
             window.set_cursor_visible(!self.captured);
         }
+    }
+    /// The browser's pointer lock decides whether the mouse is captured: it locks the pointer on
+    /// a click the game asked one for (web/www/main.js), and lets it go on Escape, which the
+    /// game then never sees: that is Escape's pause menu.
+    #[cfg(target_arch = "wasm32")]
+    pub(super) fn follow_pointer_lock(&mut self) -> Result<()> {
+        let locked = horizon_web::pointer_locked();
+        if locked && !self.captured && horizon_web::wants_pointer_lock() {
+            self.captured = true;
+            self.mouse.set_ignore_first_move();
+            if let Some(window) = &self.window {
+                window.set_cursor_visible(false);
+            }
+        } else if !locked && self.captured {
+            self.captured = false;
+            if let Some(window) = &self.window {
+                window.set_cursor_visible(true);
+            }
+            if self.screen == Screen::Playing {
+                self.key_pressed(KeyCode::Escape, KeyCode::Escape)?;
+            }
+        }
+        Ok(())
     }
     /// The game's pointer grab leaves the system pointer where the person at the computer has
     /// it: a genuinely hidden `--offscreen` run, an agent's window no one has clicked yet, or a

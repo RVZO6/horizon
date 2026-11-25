@@ -42,12 +42,24 @@ pub fn main_with(
             std::process::exit(1);
         }
     };
+    #[cfg(not(target_arch = "wasm32"))]
     mod_render::render::install();
     horizon_client::entry::start(
         native,
         |native, launch| {
+            #[cfg(not(target_arch = "wasm32"))]
             let mut wasm =
                 horizon_mod_wasm::load_installed(launch, &horizon_client::logging::player_dir());
+            #[cfg(target_arch = "wasm32")]
+            struct EmptyWasm {
+                mods: Vec<mod_api::ModEntry>,
+                manifests: Vec<horizon_mod_package::Manifest>,
+            }
+            #[cfg(target_arch = "wasm32")]
+            let mut wasm = EmptyWasm {
+                mods: Vec::new(),
+                manifests: Vec::new(),
+            };
             let mut mods = mods;
             mods.extend(std::mem::take(&mut wasm.mods));
             // One installed dispatch order for both targets; ties retain bundle order.
@@ -151,6 +163,7 @@ pub fn main_with(
             mod_api::__private::install(mods.into());
             (ids, wasm)
         },
+        #[cfg(not(target_arch = "wasm32"))]
         horizon_client::entry::CodeRuntime {
             initialize: horizon_mod_wasm::initialize,
             refusal: |id| {
@@ -201,6 +214,12 @@ pub fn main_with(
                     .any(|(owner, _)| owner == id)
             },
         },
+        #[cfg(target_arch = "wasm32")]
+        horizon_client::entry::CodeRuntime {
+            initialize: |_| {},
+            refusal: |_| None,
+            startup_refused: |_| false,
+        },
         startup,
     );
 }
@@ -208,6 +227,7 @@ pub fn main_with(
 /// A mod's profiler scope is the game's span, boxed only while something would see it: with
 /// spans off and no sampler it costs one check and no allocation.
 fn install_native_profile_spans() {
+    #[cfg(not(target_arch = "wasm32"))]
     mod_api::__private::install_profile_spans(|name| {
         use horizon_client::spans;
         spans::observed().then(|| Box::new(spans::guard(name)) as Box<dyn std::any::Any>)
